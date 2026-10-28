@@ -1,7 +1,16 @@
 const request = require('supertest');
 const { PrismaClient } = require('@prisma/client');
-const app = require('../src/app');
 
+jest.mock('../src/services/email.services', () => {
+    const actual = jest.requireActual('../src/services/email.services');
+
+    return {
+        ...actual,
+        sendVerificationEmail: jest.fn().mockResolvedValue(undefined)
+    };
+});
+
+const app = require('../src/app');
 const databaseIsSafe = process.env.RUN_DB_TESTS === '1' &&
     /ledgerguard_test([?]|$)/.test(process.env.DATABASE_URL || '');
 const describeDatabase = databaseIsSafe ? describe : describe.skip;
@@ -17,8 +26,13 @@ describeDatabase('authenticated endpoint schema compatibility', () => {
             name: 'Schema Check User',
             email,
             password: 'test-password-123'
-        });
-        expect(registration.status).toBe(201);
+        },30000);
+        console.log(
+  'Registration response:',
+  registration.status,
+  registration.body
+);
+expect(registration.status).toBe(201);
         user = registration.body.user;
 
         await prisma.user.update({
