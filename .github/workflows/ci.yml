@@ -16,12 +16,14 @@ jobs:
           POSTGRES_PASSWORD: ledgerguard
         ports:
           - 5432:5432
+        
         options: >-
-  --health-cmd "pg_isready -U ledgerguard -d ledgerguard_test"
-  --health-interval 5s
-  --health-timeout 5s
-  --health-retries 10
-  
+          --health-cmd "pg_isready -U ledgerguard -d ledgerguard_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+
     env:
       DATABASE_URL: postgresql://ledgerguard:ledgerguard@localhost:5432/ledgerguard_test?schema=public
       JWT_SECRET: ci-only-secret
