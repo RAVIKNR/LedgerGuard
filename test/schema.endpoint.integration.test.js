@@ -5,10 +5,11 @@ jest.mock('../src/services/email.services', () => {
     const actual = jest.requireActual('../src/services/email.services');
 
     return {
-    ...actual,
-    sendLoginConfirmationEmail: jest.fn().mockResolvedValue(undefined),
-    sendVerificationEmail: jest.fn().mockResolvedValue(undefined)
-};
+        ...actual,
+        sendLoginConfirmationEmail: jest.fn().mockResolvedValue(undefined),
+        sendVerificationEmail: jest.fn().mockResolvedValue(undefined),
+        sendAccountCreatedEmail: jest.fn().mockResolvedValue(undefined)
+    };
 });
 
 const app = require('../src/app');
