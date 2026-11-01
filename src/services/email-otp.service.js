@@ -70,9 +70,10 @@ async function sendEmailOtp(email, otp) {
             text: message.text,
             html: message.html
         });
-    } catch {
-        throw new EmailOtpDeliveryError();
-    }
+    } catch (error) {
+    console.error('[email] OTP delivery failed:', smtpErrorDetails(error));
+    throw new EmailOtpDeliveryError();
+}
 }
 
 module.exports = {
