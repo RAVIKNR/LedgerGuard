@@ -4,6 +4,10 @@ const { PrismaClient } = require('@prisma/client');
 jest.mock('../src/services/email.services', () => ({
     ...jest.requireActual('../src/services/email.services'),
     sendVerificationEmail: jest.fn().mockResolvedValue(undefined),
+    sendLoginConfirmationEmail: jest.fn().mockResolvedValue(undefined),
+    sendAccountCreatedEmail: jest.fn().mockResolvedValue(undefined),
+    sendTransactionEmail: jest.fn().mockResolvedValue(undefined),
+    sendFailedTransactionEmail: jest.fn().mockResolvedValue(undefined),
 }));
 
 const app = require('../src/app');
