@@ -23,7 +23,7 @@ function createCorsMiddleware(frontendUrl, nodeEnv) {
         if (origin && allowedOrigin) {
             res.set('Access-Control-Allow-Origin', allowedOrigin);
             res.set('Access-Control-Allow-Methods', 'GET, HEAD, POST, PATCH, OPTIONS');
-            res.set('Access-Control-Allow-Headers', 'Authorization, Content-Type, Idempotency-Key, X-Request-Id');
+           res.set('Access-Control-Allow-Headers', 'Authorization, Content-Type, Cache-Control, Idempotency-Key, X-Request-Id');
         }
 
         if (req.method === 'OPTIONS' && origin && allowedOrigin) {
