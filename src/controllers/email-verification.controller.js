@@ -191,11 +191,23 @@ async function deliverCode(req, res, isResend) {
             challenge = await prisma.emailOtpChallenge.create({ data: { userId, ...reservedChallenge } });
         }
     } catch (error) {
-        if (error.code === 'P2002') {
-            return res.status(409).json({ error: { code: 'OTP_REQUEST_PENDING', message: 'An email verification request is already in progress.' } });
-        }
-        throw error;
+    console.error('[EMAIL OTP] Prisma error:', {
+        code: error.code,
+        meta: error.meta,
+        message: error.message
+    });
+
+    if (error.code === 'P2002') {
+        return res.status(409).json({
+            error: {
+                code: 'OTP_REQUEST_PENDING',
+                message: 'An email verification request is already in progress.'
+            }
+        });
     }
+
+    throw error;
+}
 
     const challengeId = challenge.id;
     try {
