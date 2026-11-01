@@ -11,9 +11,14 @@ function createCorsMiddleware(frontendUrl, nodeEnv) {
         res.vary('Origin');
         const origin = req.get('Origin');
 
-        if (origin && origin !== allowedOrigin) {
-            return res.status(403).json({ error: { message: 'Origin is not allowed' } });
-        }
+       if (origin && origin !== allowedOrigin) {
+    console.error('[CORS] Origin mismatch:', {
+        receivedOrigin: origin,
+        allowedOrigin,
+    });
+
+    return res.status(403).json({ error: { message: 'Origin is not allowed' } });
+}
 
         if (origin && allowedOrigin) {
             res.set('Access-Control-Allow-Origin', allowedOrigin);
