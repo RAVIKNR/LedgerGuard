@@ -308,7 +308,7 @@ function Dashboard() {
         city: profileResponse.data.user.profile.city || '',
         region: profileResponse.data.user.profile.region || '',
         postalCode: profileResponse.data.user.profile.postalCode || '',
-        country: profileResponse.data.user.profile.country || ''
+        country: profileResponse.data.user.profile.country || 'IN'
       }
       const missing: string[] = []
       if (!verificationResponse.data.verified) missing.push('Email verification')
@@ -624,7 +624,7 @@ function AccountsPage({ accounts, loading, error, onRefresh }: { accounts: Accou
     city: '',
     region: '',
     postalCode: '',
-    country: ''
+    country: 'IN'
   })
   const [phoneCountry, setPhoneCountry] = useState<CountryOption>(countries[0])
   const [phoneLocal, setPhoneLocal] = useState('')
@@ -648,7 +648,7 @@ function AccountsPage({ accounts, loading, error, onRefresh }: { accounts: Accou
           city: data.user.profile.city || '',
           region: data.user.profile.region || '',
           postalCode: data.user.profile.postalCode || '',
-          country: data.user.profile.country || ''
+          country: data.user.profile.country || 'IN'
         }
         const selectedPhoneCountry = findPhoneCountry(loadedProfile.phone)
         setPhoneCountry(selectedPhoneCountry)
@@ -703,7 +703,7 @@ function AccountsPage({ accounts, loading, error, onRefresh }: { accounts: Accou
         city: response.data.user.profile.city || '',
         region: response.data.user.profile.region || '',
         postalCode: response.data.user.profile.postalCode || '',
-        country: response.data.user.profile.country || ''
+        country: response.data.user.profile.country || 'IN'
       }
       const complete = isBankingProfileComplete(savedProfile)
       setProfile(savedProfile)
