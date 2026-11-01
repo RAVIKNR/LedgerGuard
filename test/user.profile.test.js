@@ -93,7 +93,7 @@ describe('authenticated banking profile', () => {
         expect(response.body).not.toHaveProperty('user.passwordHash');
     });
 
-    it('allows an omitted phone number and rejects an invalid supplied number', async () => {
+    it('requires a phone number and rejects an invalid supplied number', async () => {
         prisma.user.update.mockImplementation(async ({ data }) => ({ ...user, ...data }));
         const withoutPhone = await request(app)
             .patch('/api/users/me')
@@ -104,10 +104,8 @@ describe('authenticated banking profile', () => {
             .set(authHeader())
             .send(validProfile({ phone: '555-1234' }));
 
-        expect(withoutPhone.status).toBe(200);
-        expect(prisma.user.update).toHaveBeenCalledWith(expect.objectContaining({
-            data: expect.objectContaining({ phone: null })
-        }));
+        expect(withoutPhone.status).toBe(400);
+        expect(prisma.user.update).not.toHaveBeenCalled();
         expect(invalid.status).toBe(400);
     });
 

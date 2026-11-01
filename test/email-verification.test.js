@@ -43,6 +43,7 @@ function authHeader() {
 function validProfile(overrides = {}) {
     return {
         name: 'Current User',
+        phone: '+919876543210',
         addressLine: '1 Ledger Street',
         city: 'Mumbai',
         region: 'MH',
@@ -344,7 +345,11 @@ describe('authenticated email OTP verification', () => {
 
         expect(account.status).toBe(201);
         expect(prisma.account.create).toHaveBeenCalledWith({
-            data: { userId, currency: 'INR' }
+            data: {
+                userId,
+                currency: 'INR',
+                accountNumber: expect.stringMatching(/^\d{16}$/)
+            }
         });
     });
 
@@ -391,7 +396,7 @@ describe('authenticated email OTP verification', () => {
         expect(emailOtpService.sendEmailOtp).toHaveBeenCalledTimes(5);
     });
 
-    it('allows creating a complete profile without providing a phone number', async () => {
+    it('requires a phone number when saving a complete profile', async () => {
         prisma.user.update.mockResolvedValue({ ...user, ...validProfile() });
         const response = await request(app)
             .patch('/api/users/me')
@@ -400,7 +405,7 @@ describe('authenticated email OTP verification', () => {
 
         expect(response.status).toBe(200);
         expect(prisma.user.update).toHaveBeenCalledWith(expect.objectContaining({
-            data: expect.objectContaining({ phone: null })
+            data: expect.objectContaining({ phone: '+919876543210' })
         }));
     });
 });

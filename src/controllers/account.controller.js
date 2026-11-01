@@ -1,6 +1,7 @@
 const { prisma } = require('../config/db');
 const { normalizeInr } = require('../config/currency');
 const { sendAccountCreatedEmail } = require('../services/email.services');
+const { createAccountWithNumber } = require('../services/account-number.service');
 
 function serializeAccount(account, holderName) {
     return {
@@ -9,14 +10,15 @@ function serializeAccount(account, holderName) {
         currency: account.currency.trim(),
         status: account.status,
         holderName: account.user?.name || holderName || null,
-        accountNumber: account.accountNumber || account.id,
+        accountNumber: account.accountNumber,
         createdAt: account.createdAt,
         updatedAt: account.updatedAt
     };
 }
 
 function hasCompleteProfile(user) {
-    return [
+    const phoneIsValid = typeof user.phone === 'string' && /^\+[1-9]\d{7,14}$/.test(user.phone.trim());
+    return phoneIsValid && [
         user.name, user.addressLine, user.city, user.region, user.postalCode, user.country
     ].every((value) => typeof value === 'string' && value.trim().length > 0);
 }
@@ -34,8 +36,10 @@ async function ensureInrAccount(user) {
     });
     if (!challenge || challenge.email !== user.email || challenge.status !== 'VERIFIED' || !challenge.verifiedAt) return null;
     try {
-        return await prisma.account.create({
-            data: { userId: user.id, currency: 'INR' },
+        return await createAccountWithNumber(prisma, {
+            userId: user.id,
+            currency: 'INR'
+        }, {
             include: { user: { select: { name: true } } }
         });
     } catch (error) {
@@ -55,6 +59,8 @@ function serializeTransfer(transfer, accountId) {
         direction: isOutgoing ? 'OUTGOING' : 'INCOMING',
         senderAccountId: transfer.senderAccountId,
         receiverAccountId: transfer.receiverAccountId,
+        senderAccountNumber: transfer.senderAccount?.accountNumber || null,
+        receiverAccountNumber: transfer.receiverAccount?.accountNumber || null,
         amountMinor: transfer.amountMinor.toString(),
         currency: transfer.currency.trim(),
         status: transfer.status,
@@ -96,15 +102,16 @@ async function createAccount(req, res) {
     }
 
     try {
-        const account = await prisma.account.create({
-            data: { userId: req.user.id, currency }
+        const account = await createAccountWithNumber(prisma, {
+            userId: req.user.id,
+            currency
         });
 
         res.status(201).json({ account: serializeAccount(account) });
         void sendAccountCreatedEmail({
             email: req.user.email,
             name: req.user.name,
-            accountId: account.id,
+            accountId: account.accountNumber,
             occurredAt: account.createdAt
         }).catch(error => console.error(JSON.stringify({
             event: 'account_created_email_failed',
@@ -124,11 +131,12 @@ async function getRecipientAccount(req, res) {
             ? { id: req.params.id }
             : { accountNumber: req.params.id },
         select: {
-            id: true,
-            currency: true,
-            status: true,
-            user: { select: { name: true, status: true } }
-        }
+    id: true,
+    accountNumber: true,
+    currency: true,
+    status: true,
+    user: { select: { name: true, status: true } }
+}
     });
     if (!account) {
         return res.status(404).json({ error: { code: 'RECIPIENT_NOT_FOUND', message: 'Recipient account not found' } });
@@ -139,7 +147,7 @@ async function getRecipientAccount(req, res) {
     res.json({
         recipient: {
             accountId: account.id,
-            accountNumber: account.accountNumber || account.id,
+            accountNumber: account.accountNumber,
             holderName: account.user.name,
             status: account.status,
             currency: account.currency.trim(),
@@ -186,6 +194,7 @@ async function getBalance(req, res) {
 
     res.json({
         accountId: account.id,
+        accountNumber: account.accountNumber,
         currency: account.currency.trim(),
         status: account.status,
         balanceMinor: balanceMinor.toString()
@@ -245,7 +254,11 @@ async function getAccountTransfers(req, res) {
     const [transfers, total] = await prisma.$transaction([
         prisma.transfer.findMany({
             where,
-            include: { riskAssessment: { select: { level: true, decision: true } } },
+            include: {
+                riskAssessment: { select: { level: true, decision: true } },
+                senderAccount: { select: { accountNumber: true } },
+                receiverAccount: { select: { accountNumber: true } }
+            },
             orderBy: { createdAt: 'desc' },
             skip: (page - 1) * pageSize,
             take: pageSize
@@ -269,7 +282,8 @@ async function getTransferDetail(req, res) {
             ]
         },
         include: {
-            senderAccount: { select: { userId: true } },
+            senderAccount: { select: { userId: true, accountNumber: true } },
+            receiverAccount: { select: { accountNumber: true } },
             riskAssessment: { select: { level: true, decision: true, score: true, reasons: true } },
             ledgerEntries: { select: { id: true, accountId: true, entryType: true, amountMinor: true, currency: true, createdAt: true } }
         }

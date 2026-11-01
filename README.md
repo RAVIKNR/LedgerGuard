@@ -466,5 +466,12 @@ is stored in the additive `users.google_subject` field. Existing
 email/password users are not automatically linked; the Google endpoint returns
 a conflict instructing the user to use the password account. Configure the
 same Web Client ID in the backend `.env` and `frontend/.env.local`.
+
+The forgot-password endpoint intentionally returns different messages for
+existing and nonexistent email addresses because the product flow requires
+account-specific frontend feedback. This enables account enumeration, so
+production deployments should switch to a generic response if that threat
+outweighs the UX requirement. Reset tokens remain hashed, single-use, and
+valid for 15 minutes.
 - `POST /api/transaction/transaction`
 - `POST /api/transaction/initial-funding`

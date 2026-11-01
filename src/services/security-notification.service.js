@@ -14,7 +14,7 @@ async function queueSecurityNotification(tx, data) {
             previousStatus: data.previousStatus,
             resultingStatus: data.resultingStatus,
             reason: data.reason || null,
-            occurredAt: data.occurredAt
+            occurredAt: data.occurredAt ?? new Date()
         }
     });
 }

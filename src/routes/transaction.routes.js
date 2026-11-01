@@ -6,11 +6,10 @@ const validateRequest = require('../middleware/validation.middleware');
 
 const router = express.Router();
 const transferValidation = [
-    body('senderAccountId').optional().isUUID().withMessage('senderAccountId must be a valid UUID'),
     body('receiverAccountId').optional().isString().trim().isLength({ min: 1, max: 64 }).withMessage('receiverAccountId must be a valid account number'),
-    body('fromAccount').optional().isUUID().withMessage('fromAccount must be a valid UUID'),
     body('toAccount').optional().isString().trim().isLength({ min: 1, max: 64 }).withMessage('toAccount must be a valid account number'),
-    body('amountMinor').isInt({ min: 1 }).withMessage('amountMinor must be a positive integer'),
+    body('amountMinor').optional().isInt({ min: 1 }).withMessage('amountMinor must be a positive integer'),
+    body('amount').optional().isString().withMessage('amount must be a decimal INR amount'),
     body('currency').custom(value => String(value).trim().toUpperCase() === 'INR').withMessage('Only INR transfers are supported'),
     header('Idempotency-Key').isLength({ min: 1, max: 255 }).withMessage('Idempotency-Key is required')
 ];

@@ -11,6 +11,7 @@ type Transaction = {
   currency: string
   status: string
   createdAt: string
+  receiverAccountNumber?: string | null
 }
 
 export function TransactionResultModal({
@@ -22,6 +23,7 @@ export function TransactionResultModal({
   onClose,
   onRetry,
   onCheckStatus,
+  onPayAgain,
   checking
 }: {
   transaction?: Transaction
@@ -39,10 +41,12 @@ export function TransactionResultModal({
   onClose: () => void
   onRetry?: () => void
   onCheckStatus?: () => void
+  onPayAgain?: () => Promise<void>
   checking?: boolean
 }) {
   const closeButton = useRef<HTMLButtonElement>(null)
   const [soundEnabled, setSoundEnabled] = useState(isSuccessSoundEnabled)
+  const [payAgainLoading, setPayAgainLoading] = useState(false)
   const kind = failureAttempt ? 'failure' : transaction?.status === 'COMPLETED' ? 'success' : transaction?.status === 'FAILED' ? 'failure' : 'pending'
   const amountMinor = failureAttempt?.amountMinor || transaction?.amountMinor || '0'
   const currency = failureAttempt?.currency || transaction?.currency || 'INR'
@@ -64,6 +68,16 @@ export function TransactionResultModal({
     window.dispatchEvent(new Event('ledgerguard-sound-preference'))
   }
 
+  async function payAgain() {
+    if (!onPayAgain || payAgainLoading) return
+    setPayAgainLoading(true)
+    try {
+      await onPayAgain()
+    } finally {
+      setPayAgainLoading(false)
+    }
+  }
+
   const title = kind === 'success' ? 'Payment Successful' : kind === 'failure' ? 'TRANSACTION FAILED' : 'Payment Pending'
   const description = failureAttempt ? 'Insufficient Funds' : message
 
@@ -80,7 +94,7 @@ export function TransactionResultModal({
       <div className="transaction-result-details">
         <div><span>Amount</span><strong>{amount}</strong></div>
         {recipientName && <div><span>Recipient</span><strong>{recipientName}</strong></div>}
-        {recipientAccount && <div><span>Account</span><strong>{`•••• ${recipientAccount.slice(-8)}`}</strong></div>}
+        {recipientAccount && <div><span>Account</span><strong>{recipientAccount}</strong></div>}
         {failureAttempt && <div><span>Source account</span><strong>{failureAttempt.sourceAccount}</strong></div>}
         {failureAttempt && <div><span>Available / required</span><strong>{new Intl.NumberFormat(undefined, { style: 'currency', currency }).format(Number(failureAttempt.availableBalanceMinor) / 100)} / {new Intl.NumberFormat(undefined, { style: 'currency', currency }).format(Number(failureAttempt.requiredAmountMinor) / 100)}</strong></div>}
         {transaction && <><div><span>Status</span><strong>{transaction.status}</strong></div><div><span>Reference</span><strong>{transaction.reference || transaction.id}</strong></div><div><span>Submitted</span><strong>{new Date(transaction.createdAt).toLocaleString()}</strong></div></>}
@@ -89,6 +103,7 @@ export function TransactionResultModal({
         <Button type="button" variant="secondary" onClick={toggleSound} aria-label={soundEnabled ? 'Mute payment sound' : 'Enable payment sound'}>
           {soundEnabled ? <Volume2 size={15} /> : <VolumeX size={15} />} {soundEnabled ? 'Sound on' : 'Sound off'}
         </Button>
+        {onPayAgain && <Button type="button" variant="secondary" onClick={() => void payAgain()} disabled={payAgainLoading || checking}>{payAgainLoading ? 'Verifying…' : 'Pay Again'}</Button>}
         {kind === 'success' && <Button type="button" onClick={onClose}>Done</Button>}
         {kind === 'failure' && <><Button type="button" variant="ghost" onClick={onClose}>Close</Button><Button type="button" onClick={onRetry}>Try Again</Button></>}
         {kind === 'pending' && <><Button type="button" variant="ghost" onClick={onClose}>Close</Button><Button type="button" onClick={onCheckStatus} disabled={checking}>{checking ? 'Checking…' : 'Check Status'}</Button></>}

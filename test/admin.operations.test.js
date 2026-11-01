@@ -42,6 +42,7 @@ const app = require('../src/app');
 const adminId = '10000000-0000-4000-8000-000000000001';
 const targetUserId = '20000000-0000-4000-8000-000000000002';
 const accountId = '30000000-0000-4000-8000-000000000003';
+const accountNumber = '1234567890123456';
 
 function user(id, status = 'ACTIVE') {
     return {
@@ -68,6 +69,7 @@ describe('administrator operations', () => {
         prisma.__state.users.set(targetUserId, user(targetUserId));
         prisma.__state.accounts.set(accountId, {
             id: accountId,
+            accountNumber,
             userId: targetUserId,
             currency: 'INR ',
             status: 'ACTIVE',
@@ -333,6 +335,25 @@ describe('administrator operations', () => {
                 OR: [{ senderAccountId: accountId }, { receiverAccountId: accountId }]
             })
         }));
+
+        prisma.transfer.findMany.mockResolvedValue([{
+            id: '40000000-0000-4000-8000-000000000004',
+            senderAccountId: accountId,
+            receiverAccountId: '30000000-0000-4000-8000-000000000004',
+            senderAccount: { accountNumber },
+            receiverAccount: { accountNumber: '6543210987654321' },
+            amountMinor: 1250n,
+            currency: 'INR ',
+            status: 'COMPLETED',
+            createdAt: new Date('2026-02-01T00:00:00.000Z'),
+            riskAssessment: null
+        }]);
+        const transfers = await request(app).get('/api/admin/transfers').set(admin());
+        expect(transfers.status).toBe(200);
+        expect(transfers.body.transfers[0]).toMatchObject({
+            senderAccountNumber: accountNumber,
+            receiverAccountNumber: '6543210987654321'
+        });
     });
 
     it('returns paginated user and account lists and exposes audit records only to admins', async () => {
@@ -349,6 +370,7 @@ describe('administrator operations', () => {
         const accounts = await request(app).get('/api/admin/accounts').set(admin());
         expect(accounts.status).toBe(200);
         expect(accounts.body.accounts[0].currency).toBe('INR');
+        expect(accounts.body.accounts[0].accountNumber).toBe(accountNumber);
 
         prisma.adminAuditLog.findMany.mockResolvedValue([{
             id: 'audit-1',
@@ -375,6 +397,7 @@ describe('administrator operations', () => {
     it('searches eligible recipients by holder name and exact account number', async () => {
             prisma.account.findMany.mockResolvedValue([{
                 id: accountId,
+                accountNumber,
                 user: { name: 'Customer User' }
             }]);
             prisma.account.count.mockResolvedValue(1);
@@ -384,7 +407,7 @@ describe('administrator operations', () => {
 
             expect(byName.status).toBe(200);
             expect(byName.body).toEqual({
-                accounts: [{ accountId, accountNumber: accountId, holderName: 'Customer User' }],
+                accounts: [{ accountId, accountNumber, holderName: 'Customer User' }],
                 pagination: { page: 1, pageSize: 50, total: 1, totalPages: 1 }
             });
             expect(prisma.account.findMany).toHaveBeenCalledWith(expect.objectContaining({
@@ -396,10 +419,10 @@ describe('administrator operations', () => {
             }));
 
             const byAccountNumber = await request(app).get('/api/admin/accounts/recipients')
-                .query({ search: accountId }).set(admin());
+                .query({ search: accountNumber }).set(admin());
             expect(byAccountNumber.status).toBe(200);
             expect(prisma.account.findMany).toHaveBeenLastCalledWith(expect.objectContaining({
-                where: expect.objectContaining({ OR: [{ id: accountId }, expect.anything()] })
+                where: expect.objectContaining({ OR: [{ accountNumber }, expect.anything()] })
             }));
         });
 

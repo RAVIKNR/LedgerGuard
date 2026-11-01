@@ -68,4 +68,18 @@ describe('authentication middleware error handling', () => {
         expect(query.select).toEqual(expect.objectContaining({ email: true, phone: true }));
         expect(next).toHaveBeenCalledWith();
     });
+
+    it('rejects a JWT issued before the user password was changed', async () => {
+        jwt.verify.mockReturnValue({ sub: 'user-id', authVersion: 1 });
+        prisma.user.findUnique.mockResolvedValue({
+            id: 'user-id',
+            status: 'ACTIVE',
+            authVersion: 2
+        });
+
+        await authenticate(req, res, next);
+
+        expect(res.status).toHaveBeenCalledWith(401);
+        expect(next).not.toHaveBeenCalled();
+    });
 });

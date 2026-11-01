@@ -8,6 +8,7 @@ jest.mock('../src/config/db', () => {
     const state = {
         account: {
             id: '30000000-0000-4000-8000-000000000003',
+            accountNumber: '1234567890123456',
             userId: '20000000-0000-4000-8000-000000000002',
             currency: 'INR',
             status: 'ACTIVE',
@@ -113,7 +114,7 @@ describe('admin funding operations', () => {
             .set('Authorization', 'Bearer customer-token');
         expect(valid.status).toBe(200);
         expect(valid.body.recipient).toMatchObject({
-            accountNumber: prisma.__state.account.id,
+            accountNumber: prisma.__state.account.accountNumber,
             holderName: 'Customer',
             eligible: true
         });

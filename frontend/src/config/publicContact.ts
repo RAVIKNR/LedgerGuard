@@ -6,4 +6,4 @@ export const publicContact = {
   twitter: 'https://x.com/ClassMcg',
   instagram: 'https://www.instagram.com/ravi_yadav04_/',
   phone: '+918329349238',
-} as const
+} as const                                                                                                                                                                                                                                                 

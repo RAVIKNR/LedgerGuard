@@ -14,7 +14,8 @@ const authenticatedUserSelect = {
     region: true,
     postalCode: true,
     country: true,
-    isAdmin: true
+    isAdmin: true,
+    authVersion: true
 };
 
 function getToken(req) {
@@ -51,7 +52,7 @@ async function authenticate(req, res, next) {
         return next(error);
     }
 
-    if (!user || user.status !== 'ACTIVE') {
+    if (!user || user.status !== 'ACTIVE' || (decoded.authVersion !== undefined && decoded.authVersion !== user.authVersion)) {
         return res.status(401).json({ error: { message: 'User is not active' } });
     }
 

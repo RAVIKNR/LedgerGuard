@@ -10,6 +10,8 @@ function transferResponse(transfer) {
         reference: transfer.reference || (transfer.status === 'FAILED' ? null : transfer.id),
         senderAccountId: transfer.senderAccountId,
         receiverAccountId: transfer.receiverAccountId,
+        senderAccountNumber: transfer.senderAccount?.accountNumber || null,
+        receiverAccountNumber: transfer.receiverAccount?.accountNumber || null,
         amountMinor: transfer.amountMinor.toString(),
         currency: transfer.currency.trim(),
         status: transfer.status,
@@ -34,11 +36,18 @@ function transferResponse(transfer) {
 
 function getTransferInput(body) {
     return {
-        senderAccountId: body.senderAccountId || body.fromAccount,
         receiverAccountId: body.receiverAccountId || body.toAccount,
         amountMinor: body.amountMinor,
+        amount: body.amount,
         currency: typeof body.currency === 'string' ? body.currency.trim().toUpperCase() : undefined,
     };
+}
+
+function decimalToMinorUnits(value) {
+    if (typeof value !== 'string' || !/^(?:\d+)(?:\.\d{1,2})?$/.test(value.trim())) return null;
+    const [whole, fraction = ''] = value.trim().split('.');
+    const minor = BigInt(whole) * 100n + BigInt(fraction.padEnd(2, '0'));
+    return minor > 0n ? minor : null;
 }
 
 function isUuid(value) {
@@ -49,34 +58,24 @@ async function transactionController(req, res) {
     const input = getTransferInput(req.body);
     const idempotencyKey = req.get('Idempotency-Key');
 
-    if (!input.senderAccountId) {
-        return res.status(400).json({ error: { code: 'SOURCE_ACCOUNT_REQUIRED', message: 'An active INR source account is required to start a transfer' } });
-    }
-    if (!input.receiverAccountId || !input.amountMinor || !input.currency || !idempotencyKey) {
-        return res.status(400).json({ error: { message: 'senderAccountId, receiverAccountId, amountMinor, currency, and Idempotency-Key are required' } });
+    if (!input.receiverAccountId || (!input.amountMinor && !input.amount) || !input.currency || !idempotencyKey) {
+        return res.status(400).json({ error: { message: 'receiverAccountId, amountMinor, currency, and Idempotency-Key are required' } });
     }
     if (input.currency !== 'INR') {
         return res.status(400).json({ error: { message: 'Only INR transfers are supported' } });
     }
 
-    if (input.senderAccountId === input.receiverAccountId) {
-        return res.status(400).json({ error: { message: 'Sender and receiver accounts must be different' } });
+    let amountMinor = input.amount ? decimalToMinorUnits(input.amount) : null;
+    if (!amountMinor && input.amountMinor !== undefined) {
+        try { amountMinor = BigInt(input.amountMinor); } catch { amountMinor = null; }
     }
-
-    let amountMinor;
-    try {
-        amountMinor = BigInt(input.amountMinor);
-    } catch {
-        return res.status(400).json({ error: { message: 'amountMinor must be a positive integer' } });
-    }
-    if (amountMinor <= 0n) {
-        return res.status(400).json({ error: { message: 'amountMinor must be a positive integer' } });
+    if (amountMinor === null || amountMinor <= 0n) {
+        return res.status(400).json({ error: { message: 'Amount must be a positive INR amount with at most two decimal places' } });
     }
 
     const requestHash = crypto
         .createHash('sha256')
         .update(JSON.stringify({
-            senderAccountId: input.senderAccountId,
             receiverAccountId: input.receiverAccountId,
             amountMinor: amountMinor.toString(),
             currency: input.currency
@@ -89,7 +88,15 @@ async function transactionController(req, res) {
                 where: {
                     userId_key: { userId: req.user.id, key: idempotencyKey }
                 },
-                include: { transfer: { include: { riskAssessment: true } } }
+                include: {
+                    transfer: {
+                        include: {
+                            riskAssessment: true,
+                            senderAccount: { select: { accountNumber: true } },
+                            receiverAccount: { select: { accountNumber: true } }
+                        }
+                    }
+                }
             });
 
             if (existingKey) {
@@ -105,25 +112,41 @@ async function transactionController(req, res) {
                 };
             }
 
+            const senderAccount = await tx.account.findFirst({
+                where: { userId: req.user.id, currency: 'INR' },
+                select: { id: true }
+            });
+            if (!senderAccount) {
+                const error = new Error('An active INR source account is required to start a transfer');
+                error.statusCode = 400;
+                error.code = 'SOURCE_ACCOUNT_REQUIRED';
+                throw error;
+            }
+
+            let senderAccountId = senderAccount.id;
             let receiverAccountId = input.receiverAccountId;
             if (!isUuid(receiverAccountId)) {
-                const recipient = await tx.account.findUnique({
-                    where: { accountNumber: receiverAccountId }
-                });
-                if (!recipient) {
+                const account = await tx.account.findUnique({ where: { accountNumber: receiverAccountId } });
+                if (!account) {
                     const error = new Error('Recipient account was not found');
                     error.statusCode = 404;
                     throw error;
                 }
-                receiverAccountId = recipient.id;
+                receiverAccountId = account.id;
             }
 
-            const firstId = input.senderAccountId < receiverAccountId
-                ? input.senderAccountId
+            if (senderAccountId === receiverAccountId) {
+                const error = new Error('Sender and receiver accounts must be different');
+                error.statusCode = 400;
+                throw error;
+            }
+
+            const firstId = senderAccountId < receiverAccountId
+                ? senderAccountId
                 : receiverAccountId;
-            const secondId = firstId === input.senderAccountId
+            const secondId = firstId === senderAccountId
                 ? receiverAccountId
-                : input.senderAccountId;
+                : senderAccountId;
 
             await tx.$queryRaw`
                 SELECT id
@@ -134,10 +157,10 @@ async function transactionController(req, res) {
             `;
 
             const accounts = await tx.account.findMany({
-                where: { id: { in: [input.senderAccountId, receiverAccountId] } },
+                where: { id: { in: [senderAccountId, receiverAccountId] } },
                 include: { user: { select: { id: true, name: true, email: true, emailVerifiedAt: true } } }
             });
-            const sender = accounts.find((account) => account.id === input.senderAccountId);
+            const sender = accounts.find((account) => account.id === senderAccountId);
             const receiver = accounts.find((account) => account.id === receiverAccountId);
 
             if (!sender || !receiver) {
@@ -229,7 +252,7 @@ async function transactionController(req, res) {
                     CASE WHEN entry_type = 'CREDIT' THEN amount_minor ELSE -amount_minor END
                 ), 0)::bigint AS balance
                 FROM "ledger_entries"
-                WHERE account_id = ${input.senderAccountId}::uuid
+                WHERE account_id = ${sender.id}::uuid
             `;
             const balanceMinor = BigInt(balanceRows[0].balance);
 
@@ -341,7 +364,15 @@ async function transactionController(req, res) {
                 where: {
                     userId_key: { userId: req.user.id, key: idempotencyKey }
                 },
-                include: { transfer: { include: { riskAssessment: true } } }
+                include: {
+                    transfer: {
+                        include: {
+                            riskAssessment: true,
+                            senderAccount: { select: { accountNumber: true } },
+                            receiverAccount: { select: { accountNumber: true } }
+                        }
+                    }
+                }
             });
 
             if (existingKey && existingKey.requestHash === requestHash && existingKey.transfer) {
@@ -365,7 +396,15 @@ async function getTransferStatus(req, res) {
         where: {
             userId_key: { userId: req.user.id, key: idempotencyKey }
         },
-        include: { transfer: { include: { riskAssessment: true } } }
+        include: {
+            transfer: {
+                include: {
+                    riskAssessment: true,
+                    senderAccount: { select: { accountNumber: true } },
+                    receiverAccount: { select: { accountNumber: true } }
+                }
+            }
+        }
     });
 
     if (!existingKey?.transfer) {
@@ -378,4 +417,4 @@ async function getTransferStatus(req, res) {
     });
 }
 
-module.exports = { transactionController, getTransferStatus };
+module.exports = { transactionController, getTransferStatus, decimalToMinorUnits };

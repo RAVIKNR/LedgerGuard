@@ -8,6 +8,8 @@ import { BrowserRouter, Link, Route, Routes, useLocation, useNavigate } from 're
 import { Badge, Button, Card, Dialog, Skeleton, Tooltip } from './components/ui'
 import { AuthPage } from './auth/AuthPage'
 import { VerifyEmailPage } from './auth/VerifyEmailPage'
+import { ForgotPasswordPage } from './auth/ForgotPasswordPage'
+import { ResetPasswordPage } from './auth/ResetPasswordPage'
 import { AuthProvider, useAuth, getApiErrorMessage } from './auth/AuthContext'
 import { api } from './lib/api'
 import { EmailVerification } from './components/EmailVerification'
@@ -16,6 +18,7 @@ import { LedgerObject } from './components/LedgerObject'
 import { TransactionResultModal } from './components/TransactionResultModal'
 import { publicContact } from './config/publicContact'
 import { isSuccessSoundEnabled, setSuccessSoundEnabled } from './lib/successSound'
+import { countries, type CountryOption } from './data/countries'
 
 type BankingProfile = {
   name: string
@@ -38,12 +41,77 @@ function isBankingProfileComplete(profile: BankingProfile) {
   ].every((value) => typeof value === 'string' && value.trim().length > 0)
 }
 
+function findPhoneCountry(phone: string) {
+  return [...countries].sort((a, b) => b.callingCode.length - a.callingCode.length)
+    .find((country) => phone.startsWith(country.callingCode)) || countries[0]
+}
+
+function PhoneCountryPicker({ value, onChange }: { value: CountryOption; onChange: (country: CountryOption) => void }) {
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const pickerRef = useRef<HTMLDivElement>(null)
+  const filteredCountries = countries.filter((country) => `${country.name} ${country.callingCode}`.toLowerCase().includes(query.toLowerCase()))
+
+  useEffect(() => {
+    if (!open) return
+    function closePicker(event: MouseEvent) {
+      if (pickerRef.current && !pickerRef.current.contains(event.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', closePicker)
+    return () => document.removeEventListener('mousedown', closePicker)
+  }, [open])
+
+  return <div className="phone-country-picker" ref={pickerRef}>
+    <button type="button" className="phone-country-trigger" aria-haspopup="listbox" aria-expanded={open} aria-label="International calling code" onClick={() => { setOpen((current) => !current); setQuery('') }}>
+      <span>{value.flag}</span><strong>{value.callingCode}</strong><span className="phone-country-chevron">▾</span>
+    </button>
+    {open && <div className="phone-country-menu">
+      <input className="phone-country-search" autoFocus placeholder="Search countries" value={query} onChange={(event) => setQuery(event.target.value)} />
+      <div className="phone-country-options" role="listbox" aria-label="International calling codes">
+        {filteredCountries.map((country) => <button type="button" role="option" aria-selected={country.code === value.code} className={`phone-country-option${country.code === value.code ? ' selected' : ''}`} key={country.code} onClick={() => { onChange(country); setOpen(false); setQuery('') }}>
+          <span>{country.flag}</span><span>{country.name}</span><strong>{country.callingCode}</strong>
+        </button>)}
+      </div>
+    </div>}
+  </div>
+}
+
+function ResidenceCountryPicker({ value, onChange }: { value: CountryOption; onChange: (country: CountryOption) => void }) {
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const pickerRef = useRef<HTMLDivElement>(null)
+  const filteredCountries = countries.filter((country) => country.name.toLowerCase().includes(query.toLowerCase()))
+
+  useEffect(() => {
+    if (!open) return
+    function closePicker(event: MouseEvent) {
+      if (pickerRef.current && !pickerRef.current.contains(event.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', closePicker)
+    return () => document.removeEventListener('mousedown', closePicker)
+  }, [open])
+
+  return <div className="phone-country-picker residence-country-picker" ref={pickerRef}>
+    <button type="button" className="phone-country-trigger residence-country-trigger" aria-haspopup="listbox" aria-expanded={open} aria-label="Country of residence" onClick={() => { setOpen((current) => !current); setQuery('') }}>
+      <strong>{value.name}</strong><span className="phone-country-chevron">▾</span>
+    </button>
+    {open && <div className="phone-country-menu">
+      <input className="phone-country-search" autoFocus placeholder="Search countries" value={query} onChange={(event) => setQuery(event.target.value)} />
+      <div className="phone-country-options" role="listbox" aria-label="Countries of residence">
+        {filteredCountries.map((country) => <button type="button" role="option" aria-selected={country.code === value.code} className={`phone-country-option residence-country-option${country.code === value.code ? ' selected' : ''}`} key={country.code} onClick={() => { onChange(country); setOpen(false); setQuery('') }}>
+          <span>{country.name}</span>
+        </button>)}
+      </div>
+    </div>}
+  </div>
+}
+
 type Account = {
   id: string
   currency: string
   status: string
   holderName?: string | null
-  accountNumber?: string
+  accountNumber: string
   createdAt: string
 }
 
@@ -56,6 +124,8 @@ type TransferResult = {
   reference?: string | null
   senderAccountId: string | null
   receiverAccountId: string | null
+  senderAccountNumber?: string | null
+  receiverAccountNumber?: string | null
   amountMinor: string
   currency: string
   status: string
@@ -72,14 +142,19 @@ type TransferHistory = TransferResult & {
   updatedAt: string
 }
 
-function formatAccountIdentifier(accountId: string | null | undefined, fallback: string) {
-  return accountId ? `${accountId.slice(0, 8)}…` : fallback
-}
-
 function formatTransferDate(value: string | undefined) {
   if (!value) return 'Date unavailable'
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? 'Date unavailable' : date.toLocaleString()
+}
+
+function canPayAgain(transfer: TransferHistory) {
+  return transfer.direction === 'OUTGOING' && transfer.status === 'COMPLETED' && Boolean(transfer.receiverAccountNumber)
+}
+
+function amountInputFromMinor(amountMinor: string) {
+  const amount = BigInt(amountMinor)
+  return `${amount / 100n}.${String(amount % 100n).padStart(2, '0')}`
 }
 
 function normalizeTransferHistory(value: unknown): TransferHistory | null {
@@ -100,6 +175,8 @@ function normalizeTransferHistory(value: unknown): TransferHistory | null {
     direction: record.direction,
     senderAccountId: typeof record.senderAccountId === 'string' ? record.senderAccountId : null,
     receiverAccountId: typeof record.receiverAccountId === 'string' ? record.receiverAccountId : null,
+    senderAccountNumber: typeof record.senderAccountNumber === 'string' ? record.senderAccountNumber : null,
+    receiverAccountNumber: typeof record.receiverAccountNumber === 'string' ? record.receiverAccountNumber : null,
     amountMinor: record.amountMinor,
     currency: record.currency,
     status: record.status,
@@ -148,6 +225,7 @@ function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [transferOpen, setTransferOpen] = useState(false)
+  const [payAgainTransfer, setPayAgainTransfer] = useState<TransferHistory | null>(null)
   const [selectedAccountId, setSelectedAccountId] = useState('')
   const [transfers, setTransfers] = useState<TransferHistory[]>([])
   const [transferPage, setTransferPage] = useState({ page: 1, pageSize: 10, total: 0, totalPages: 0 })
@@ -310,7 +388,7 @@ function Dashboard() {
       <header className="topbar"><div className="breadcrumbs"><span>Workspace</span><b>/</b><strong>{pageTitle(page)}</strong></div><div className="topbar-actions"><button className="search" aria-label="Search transfers" onClick={() => navigate('/history')}><Search size={15} /><span>Search transfers</span><kbd><Command size={10} /> K</kbd></button><Tooltip label={dark ? 'Switch to light theme' : 'Switch to dark theme'}><button className="icon-button" onClick={() => setTheme(!dark)} aria-label="Toggle theme">{dark ? <Sun size={16} /> : <Moon size={16} />}</button></Tooltip></div></header>
       <div className="content-wrap" ref={contentRef}>
         <PageTransition routeKey={location.pathname} reducedMotion={reduceMotion}>
-        {page !== 'dashboard' && <RoutePage page={page} accounts={accounts} loading={loading} error={error} onRefresh={() => void loadDashboard()} onTransfer={() => void openTransfer()} />}
+        {page !== 'dashboard' && <RoutePage page={page} accounts={accounts} loading={loading} error={error} onRefresh={() => void loadDashboard()} onTransfer={() => { setPayAgainTransfer(null); setTransferOpen(true) }} onPayAgain={(transfer) => { setPayAgainTransfer(transfer); setTransferOpen(true) }} />}
         {page === 'dashboard' && <>
         <motion.section className="welcome" {...motionProps}><div><div className="eyebrow"><Activity size={13} /> Account overview</div><h1>Good morning, {user?.name.split(' ')[0] || 'there'}<span>.</span></h1><p>Your balances are read directly from the LedgerGuard ledger.</p></div><LedgerObject className="dashboard-installation" /><div className="welcome-actions"><Button onClick={() => void openTransfer()} disabled={setupLoading}> <ArrowUpRight size={16} /> {setupLoading ? 'Checking setup…' : 'New transfer'}</Button><Button onClick={() => void loadDashboard()} variant="secondary">{loading ? 'Refreshing…' : 'Refresh balances'}</Button></div></motion.section>
         {error && <Card className="dashboard-error"><div><strong>Could not load your dashboard</strong><p>{error}</p></div><Button size="sm" onClick={() => void loadDashboard()}>Try again</Button></Card>}
@@ -322,18 +400,18 @@ function Dashboard() {
           <SummaryCard label="Account status" value={loading ? '—' : accounts.length && accounts.every((account) => account.status === 'ACTIVE') ? 'Active' : 'Review' } detail={loading ? 'Checking accounts' : 'Based on account status'} icon={<ShieldCheck size={17} />} tone="amber" loading={loading} />
         </motion.section>
         <section className="dashboard-grid">
-          <Card className="balance-panel"><PanelHeading kicker="Authoritative balances" title="Your accounts"><span className="panel-meta"><Badge tone="neutral">DEMO MODE — NO REAL MONEY INVOLVED</Badge> {accounts.length} account{accounts.length === 1 ? '' : 's'}</span></PanelHeading>{loading ? <div className="account-list">{[1, 2].map((item) => <div className="account-row" key={item}><Skeleton className="account-skeleton-icon" /><div className="account-info"><Skeleton className="skeleton-line" /><Skeleton className="skeleton-line short" /></div><Skeleton className="balance-skeleton" /></div>)}</div> : accounts.length ? <div className="account-list">{accounts.map((account) => <div className="account-row" key={account.id}><div className="account-icon"><WalletCards size={17} /></div><div className="account-info"><strong>{account.currency} account</strong><span>{account.id.slice(0, 8)} · {account.status.toLowerCase()}</span></div><div className="account-balance"><strong>{formatMoney(account.balanceMinor, account.currency)}</strong><span>Available ledger balance · simulated only</span></div></div>)}</div> : <EmptyState title="No accounts yet" message="Create an account to see its authoritative balance here." />}</Card>
-          <Card className="activity-panel" id="activity"><PanelHeading kicker="Account history" title="Transfers"><Badge tone={historyLoading ? 'neutral' : 'success'}>{historyLoading ? 'Loading' : 'Authorized data'}</Badge></PanelHeading><div className="history-controls"><select className="ui-input" value={selectedAccountId} onChange={(event) => { setSelectedAccountId(event.target.value); setTransferPage((page) => ({ ...page, page: 1 })) }}><option value="">Choose account</option>{accounts.map((account) => <option value={account.id} key={account.id}>{account.currency} · {account.id.slice(0, 8)}…</option>)}</select><input className="ui-input" placeholder="Search reference or ID" value={transferFilters.search} onChange={(event) => { setTransferFilters({ ...transferFilters, search: event.target.value }); setTransferPage((page) => ({ ...page, page: 1 })) }} /><select className="ui-input" value={transferFilters.direction} onChange={(event) => { setTransferFilters({ ...transferFilters, direction: event.target.value }); setTransferPage((page) => ({ ...page, page: 1 })) }}><option value="">All directions</option><option value="INCOMING">Incoming</option><option value="OUTGOING">Outgoing</option></select><select className="ui-input" value={transferFilters.status} onChange={(event) => { setTransferFilters({ ...transferFilters, status: event.target.value }); setTransferPage((page) => ({ ...page, page: 1 })) }}>          <option value="">All statuses</option><option value="COMPLETED">Completed</option><option value="PENDING">Pending</option><option value="PROCESSING">Processing</option><option value="REVIEW">Review</option><option value="FAILED">Failed</option></select></div>{historyError && <div className="form-error" role="alert">{historyError} <button className="text-button" onClick={() => void loadTransfers()}>Retry</button></div>}{historyLoading ? <div className="table-loading"><Skeleton className="skeleton-line" /><Skeleton className="skeleton-line" /><Skeleton className="skeleton-line" /></div> : transfers.length ? <div className="history-list">{transfers.map((transfer) => <button className="history-row" key={transfer.id} onClick={async () => { try { const response = await api.get<{ transfer: TransferHistory }>(`/accounts/transfers/${transfer.id}`); setDetail(response.data.transfer) } catch (requestError) { setHistoryError(getApiErrorMessage(requestError, 'We could not load this transfer.')) } }}><span className={`history-direction ${transfer.direction.toLowerCase()}`}>{transfer.direction === 'INCOMING' ? <ArrowDownLeft size={15} /> : <ArrowUpRight size={15} />}</span><span className="history-main"><strong>{transfer.reference || `${transfer.direction.toLowerCase()} transfer`}</strong>          <small>{formatTransferDate(transfer.createdAt)} · {formatAccountIdentifier(transfer.senderAccountId, 'External source')} → {formatAccountIdentifier(transfer.receiverAccountId, 'Unknown recipient')}</small>{transfer.status === 'FAILED' && <small className="history-failure-reason">{transfer.failureReason || 'Transfer rejected'}</small>}</span><span className="history-amount"><strong>{transfer.direction === 'INCOMING' ? '+' : '−'}{formatMoney(transfer.amountMinor, transfer.currency)}</strong><Badge tone={transfer.status === 'COMPLETED' ? 'success' : transfer.status === 'FAILED' ? 'danger' : transfer.status === 'REVIEW' ? 'warning' : 'neutral'}>{transfer.status}</Badge></span></button>)}</div> : <EmptyState title="No transfers found" message="Try another account or adjust the filters." />}<div className="pagination"><span>{transferPage.total} total</span><div><Button size="sm" variant="ghost" disabled={transferPage.page <= 1} onClick={() => setTransferPage((page) => ({ ...page, page: page.page - 1 }))}>Previous</Button><span>Page {transferPage.page} of {Math.max(transferPage.totalPages, 1)}</span><Button size="sm" variant="ghost" disabled={transferPage.page >= transferPage.totalPages}           onClick={() => setTransferPage((page) => ({ ...page, page: page.page + 1 }))}>Next</Button></div></div></Card>
+          <Card className="balance-panel"><PanelHeading kicker="Authoritative balances" title="Your accounts"><span className="panel-meta"><Badge tone="neutral">DEMO MODE — NO REAL MONEY INVOLVED</Badge> {accounts.length} account{accounts.length === 1 ? '' : 's'}</span></PanelHeading>{loading ? <div className="account-list">{[1, 2].map((item) => <div className="account-row" key={item}><Skeleton className="account-skeleton-icon" /><div className="account-info"><Skeleton className="skeleton-line" /><Skeleton className="skeleton-line short" /></div><Skeleton className="balance-skeleton" /></div>)}</div> : accounts.length ? <div className="account-list">{accounts.map((account) => <div className="account-row" key={account.id}><div className="account-icon"><WalletCards size={17} /></div><div className="account-info"><strong>{account.currency} account</strong>          <span>{account.accountNumber} · {account.status.toLowerCase()}</span></div><div className="account-balance"><strong>{formatMoney(account.balanceMinor, account.currency)}</strong><span>Available ledger balance · simulated only</span></div></div>)}</div> : <EmptyState title="No accounts yet" message="Create an account to see its authoritative balance here." />}</Card>
+          <Card className="activity-panel" id="activity"><PanelHeading kicker="Account history" title="Transfers"><Badge tone={historyLoading ? 'neutral' : 'success'}>{historyLoading ? 'Loading' : 'Authorized data'}</Badge></PanelHeading><div className="history-controls"><select className="ui-input" value={selectedAccountId} onChange={(event) => { setSelectedAccountId(event.target.value); setTransferPage((page) => ({ ...page, page: 1 })) }}><option value="">Choose account</option>{accounts.map((account) =>           <option value={account.id} key={account.id}>{account.currency} · {account.accountNumber}</option>)}</select><input className="ui-input" placeholder="Search reference or ID" value={transferFilters.search} onChange={(event) => { setTransferFilters({ ...transferFilters, search: event.target.value }); setTransferPage((page) => ({ ...page, page: 1 })) }} /><select className="ui-input" value={transferFilters.direction} onChange={(event) => { setTransferFilters({ ...transferFilters, direction: event.target.value }); setTransferPage((page) => ({ ...page, page: 1 })) }}><option value="">All directions</option><option value="INCOMING">Incoming</option><option value="OUTGOING">Outgoing</option></select><select className="ui-input" value={transferFilters.status} onChange={(event) => { setTransferFilters({ ...transferFilters, status: event.target.value }); setTransferPage((page) => ({ ...page, page: 1 })) }}>          <option value="">All statuses</option><option value="COMPLETED">Completed</option><option value="PENDING">Pending</option><option value="PROCESSING">Processing</option><option value="REVIEW">Review</option><option value="FAILED">Failed</option></select></div>{historyError && <div className="form-error" role="alert">{historyError} <button className="text-button" onClick={() => void loadTransfers()}>Retry</button></div>}{historyLoading ? <div className="table-loading"><Skeleton className="skeleton-line" /><Skeleton className="skeleton-line" /><Skeleton className="skeleton-line" /></div> : transfers.length ? <div className="history-list">{transfers.map((transfer) => <div className="history-row-wrap" key={transfer.id}><button className="history-row" key={transfer.id} onClick={async () => { try { const response = await api.get<{ transfer: TransferHistory }>(`/accounts/transfers/${transfer.id}`); setDetail(response.data.transfer) } catch (requestError) { setHistoryError(getApiErrorMessage(requestError, 'We could not load this transfer.')) } }}><span className={`history-direction ${transfer.direction.toLowerCase()}`}>{transfer.direction === 'INCOMING' ? <ArrowDownLeft size={15} /> : <ArrowUpRight size={15} />}</span><span className="history-main"><strong>{transfer.reference || `${transfer.direction.toLowerCase()} transfer`}</strong>                    <small>{formatTransferDate(transfer.createdAt)} · {transfer.senderAccountNumber || 'External source'} → {transfer.receiverAccountNumber || 'Unknown recipient'}</small>{transfer.status === 'FAILED' && <small className="history-failure-reason">{transfer.failureReason || 'Transfer rejected'}</small>}</span><span className="history-amount"><strong>{transfer.direction === 'INCOMING' ? '+' : '−'}{formatMoney(transfer.amountMinor, transfer.currency)}</strong><Badge tone={transfer.status === 'COMPLETED' ? 'success' : transfer.status === 'FAILED' ? 'danger' : transfer.status === 'REVIEW' ? 'warning' : 'neutral'}>{transfer.status}</Badge></span></button>{canPayAgain(transfer) && <Button size="sm" variant="secondary" onClick={() => { setPayAgainTransfer(transfer); setTransferOpen(true) }}>Pay Again</Button>}</div>)}</div> : <EmptyState title="No transfers found" message="Try another account or adjust the filters." />}<div className="pagination"><span>{transferPage.total} total</span><div><Button size="sm" variant="ghost" disabled={transferPage.page <= 1} onClick={() => setTransferPage((page) => ({ ...page, page: page.page - 1 }))}>Previous</Button><span>Page {transferPage.page} of {Math.max(transferPage.totalPages, 1)}</span><Button size="sm" variant="ghost" disabled={transferPage.page >= transferPage.totalPages}           onClick={() => setTransferPage((page) => ({ ...page, page: page.page + 1 }))}>Next</Button></div></div></Card>
         </section>
-        <Card className="table-card"><PanelHeading kicker="Account information" title="Available balances"><Badge tone={accounts.length ? 'success' : 'neutral'}>{accounts.length ? 'Live data' : 'No data'}</Badge></PanelHeading>{loading ? <div className="table-loading"><Skeleton className="skeleton-line" /><Skeleton className="skeleton-line" /><Skeleton className="skeleton-line" /></div> : accounts.length ? <div className="table-wrap"><table><thead><tr><th>Account</th><th>Currency</th><th>Status</th><th className="table-right">Balance</th></tr></thead><tbody>{accounts.map((account) => <tr key={account.id}><td><strong>{account.id.slice(0, 12)}…</strong></td><td>{account.currency}</td><td><Badge tone={account.status === 'ACTIVE' ? 'success' : 'warning'}>{account.status}</Badge></td><td className="table-right"><strong>{formatMoney(account.balanceMinor, account.currency)}</strong></td></tr>)}</tbody></table></div> : <EmptyState title="Nothing to summarize" message="Once an account exists, its balance and status will appear here." />}</Card>
+        <Card className="table-card"><PanelHeading kicker="Account information" title="Available balances"><Badge tone={accounts.length ? 'success' : 'neutral'}>{accounts.length ? 'Live data' : 'No data'}</Badge></PanelHeading>{loading ? <div className="table-loading"><Skeleton className="skeleton-line" /><Skeleton className="skeleton-line" /><Skeleton className="skeleton-line" /></div> : accounts.length ? <div className="table-wrap"><table><thead><tr><th>Account number</th><th>Currency</th><th>Status</th><th className="table-right">Balance</th></tr></thead><tbody>{accounts.map((account) => <tr key={account.id}><td><strong>{account.accountNumber}</strong></td><td>{account.currency}</td><td><Badge tone={account.status === 'ACTIVE' ? 'success' : 'warning'}>{account.status}</Badge></td><td className="table-right"><strong>{formatMoney(account.balanceMinor, account.currency)}</strong></td></tr>)}</tbody></table></div> : <EmptyState title="Nothing to summarize" message="Once an account exists, its balance and status will appear here." />}</Card>
         <div className="footer-note"><ShieldCheck size={14} /> Balances sourced from the LedgerGuard API <span>•</span> Refresh when needed</div>
         </>}
         </PageTransition>
       </div>
     </main>
-    <TransferDialog open={transferOpen} accounts={accounts} onClose={() => setTransferOpen(false)} onCompleted={() => { void loadDashboard(); void loadTransfers() }} />
+    <TransferDialog open={transferOpen} accounts={accounts} initialTransfer={payAgainTransfer} onClose={() => { setTransferOpen(false); setPayAgainTransfer(null) }} onCompleted={() => { void loadDashboard(); void loadTransfers() }} />
     {setupOpen && <Dialog open title="Complete Your Setup" onClose={() => setSetupOpen(false)}><p className="page-copy">Complete your profile and account setup before making your first transfer.</p><ul className="setup-checklist">{setupSteps.map((step) => <li key={step}><span className="empty-icon"><Check size={14} /></span>{step}</li>)}</ul><div className="dialog-actions"><Button variant="ghost" onClick={() => setSetupOpen(false)}>Maybe Later</Button><Button onClick={() => { setSetupOpen(false); navigate('/accounts') }}>{setupLoading ? 'Checking…' : 'Complete Setup'}</Button></div></Dialog>}
-    {detail && <Dialog open title="Transfer details" onClose={() => setDetail(null)}><div className="review-list"><ReviewRow label="Reference" value={detail.reference || detail.id} /><ReviewRow label="Direction" value={detail.direction} /><ReviewRow label="Amount" value={formatMoney(detail.amountMinor, detail.currency)} /><ReviewRow label="Status" value={detail.status} /><ReviewRow label="Created" value={new Date(detail.createdAt).toLocaleString()} /></div><div className="dialog-actions"><Button onClick={() => setDetail(null)}>Close</Button></div></Dialog>}
+    {detail && <Dialog open title="Transfer details" onClose={() => setDetail(null)}><div className="review-list"><ReviewRow label="Reference" value={detail.reference || detail.id} /><ReviewRow label="Direction" value={detail.direction} /><ReviewRow label="Amount" value={formatMoney(detail.amountMinor, detail.currency)} /><ReviewRow label="Status" value={detail.status} /><ReviewRow label="Created" value={new Date(detail.createdAt).toLocaleString()} /></div><div className="dialog-actions">{canPayAgain(detail) && <Button onClick={() => { setDetail(null); setPayAgainTransfer(detail); setTransferOpen(true) }}>Pay Again</Button>}<Button onClick={() => setDetail(null)}>Close</Button></div></Dialog>}
   </div>
 }
 
@@ -345,8 +423,8 @@ function pageTitle(page: string) {
   return ({ dashboard: 'Dashboard', transfers: 'Transfers', accounts: 'Accounts', history: 'Transaction history', risk: 'Risk & review', settings: 'Settings', help: 'Help center' } as Record<string, string>)[page] || 'LedgerGuard'
 }
 
-function RoutePage({ page, accounts, loading, error, onRefresh, onTransfer }: { page: string; accounts: AccountBalance[]; loading: boolean; error: string; onRefresh: () => void; onTransfer: () => void }) {
-  if (page === 'transfers' || page === 'history') return <TransferPage accounts={accounts} historyOnly={page === 'history'} onTransfer={onTransfer} />
+function RoutePage({ page, accounts, loading, error, onRefresh, onTransfer, onPayAgain }: { page: string; accounts: AccountBalance[]; loading: boolean; error: string; onRefresh: () => void; onTransfer: () => void; onPayAgain: (transfer: TransferHistory) => void }) {
+  if (page === 'transfers' || page === 'history') return <TransferPage accounts={accounts} historyOnly={page === 'history'} onTransfer={onTransfer} onPayAgain={onPayAgain} />
   if (page === 'accounts') return <AccountsPage accounts={accounts} loading={loading} error={error} onRefresh={onRefresh} />
   if (page === 'settings') return <SettingsPage />
   if (page === 'help') return <HelpPage />
@@ -506,7 +584,7 @@ function AdminTransferRow({ transfer, onDone }: { transfer: FlaggedTransfer; onD
   return <><button className="risk-row" onClick={() => setOpen(true)}><span className={`risk-score ${transfer.risk.level.toLowerCase()}`}>{transfer.risk.score}</span><span className="history-main"><strong>{formatMoney(transfer.amountMinor, transfer.currency)} transfer</strong><small>{transfer.id.slice(0, 12)}… · {transfer.risk.reasons.join(' ')}</small></span><Badge tone="warning">{transfer.risk.level} · {transfer.risk.decision}</Badge></button>{open && <Dialog open title="Review transfer" onClose={() => !saving && setOpen(false)}><div className="risk-detail"><div className="review-list"><ReviewRow label="Transfer" value={transfer.id} /><ReviewRow label="Amount" value={formatMoney(transfer.amountMinor, transfer.currency)} /><ReviewRow label="Status" value={transfer.status} /></div><label className="field"><span className="field-label">Review notes (optional)</span><textarea className="ui-input" value={notes} onChange={(event) => setNotes(event.target.value)} maxLength={1000} /></label>{error && <div className="form-error" role="alert">{error}</div>}{decision ? <div className="confirm-box"><p>Confirm {decision.toLowerCase()} this transfer?</p><div className="dialog-actions"><Button variant="ghost" onClick={() => setDecision(null)} disabled={saving}>Cancel</Button><Button onClick={() => void confirm()} disabled={saving}>{saving ? 'Saving…' : `Confirm ${decision.toLowerCase()}`}</Button></div></div> : <div className="dialog-actions"><Button variant="danger" onClick={() => setDecision('DECLINE')}>Decline</Button><Button onClick={() => setDecision('APPROVE')}>Approve</Button></div>}</div></Dialog>}</>
 }
 
-function TransferPage({ accounts, historyOnly, onTransfer }: { accounts: AccountBalance[]; historyOnly: boolean; onTransfer: () => void }) {
+function TransferPage({ accounts, historyOnly, onTransfer, onPayAgain }: { accounts: AccountBalance[]; historyOnly: boolean; onTransfer: () => void; onPayAgain: (transfer: TransferHistory) => void }) {
   const { logout } = useAuth()
   const [accountId, setAccountId] = useState(accounts[0]?.id || '')
   const [search, setSearch] = useState('')
@@ -534,7 +612,7 @@ function TransferPage({ accounts, historyOnly, onTransfer }: { accounts: Account
   }, [accountId, direction, logout, page.page, page.pageSize, search, status])
   useEffect(() => { void load() }, [load])
   useEffect(() => { if (!accountId && accounts[0]) setAccountId(accounts[0].id) }, [accountId, accounts])
-  return <div><div className="page-heading"><div><span className="section-kicker">{historyOnly ? 'Ledger activity' : 'Money movement'}</span><h1>{historyOnly ? 'Transaction history' : 'Transfers'}</h1><p>{historyOnly ? 'Search and inspect authorized transfer activity.' : 'Create a transfer using the backend idempotency safeguards.'}</p></div>{!historyOnly && <Button onClick={onTransfer}><ArrowUpRight size={16} /> New transfer</Button>}</div><Card className="table-card"><div className="history-controls"><select aria-label="Account" className="ui-input" value={accountId} onChange={(event) => { setAccountId(event.target.value); setPage((current) => ({ ...current, page: 1 })) }}><option value="">Choose account</option>{accounts.map((account) => <option value={account.id} key={account.id}>{account.currency} · {account.id.slice(0, 8)}…</option>)}</select><input aria-label="Search transfers" className="ui-input" placeholder="Search reference or ID" value={search} onChange={(event) => { setSearch(event.target.value); setPage((current) => ({ ...current, page: 1 })) }} /><select aria-label="Direction" className="ui-input" value={direction} onChange={(event) => { setDirection(event.target.value); setPage((current) => ({ ...current, page: 1 })) }}><option value="">All directions</option><option value="INCOMING">Incoming</option><option value="OUTGOING">Outgoing</option></select><select aria-label="Status" className="ui-input" value={status} onChange={(event) => { setStatus(event.target.value); setPage((current) => ({ ...current, page: 1 })) }}>  <option value="">All statuses</option><option value="COMPLETED">Completed</option><option value="PENDING">Pending</option><option value="PROCESSING">Processing</option><option value="REVIEW">Review</option><option value="FAILED">Failed</option></select></div>{error && <div className="form-error" role="alert">{error} <button className="text-button" onClick={() => void load()}>Retry</button></div>}{loading ? <div className="table-loading"><Skeleton className="skeleton-line" /><Skeleton className="skeleton-line" /><Skeleton className="skeleton-line" /></div> : rows.length ? <div className="history-list">{rows.map((transfer) => <button className="history-row" key={transfer.id} onClick={async () => { try { const response = await api.get<{ transfer: TransferHistory }>(`/accounts/transfers/${transfer.id}`); setDetail(response.data.transfer) } catch (requestError) { setError(getApiErrorMessage(requestError, 'We could not load this transfer.')) } }}><span className={`history-direction ${transfer.direction.toLowerCase()}`}>{transfer.direction === 'INCOMING' ? <ArrowDownLeft size={15} /> : <ArrowUpRight size={15} />}</span><span className="history-main"><strong>{transfer.reference || `${transfer.direction.toLowerCase()} transfer`}</strong>  <small>{formatTransferDate(transfer.createdAt)} · {formatAccountIdentifier(transfer.senderAccountId, 'External source')} → {formatAccountIdentifier(transfer.receiverAccountId, 'Unknown recipient')}</small>{transfer.status === 'FAILED' && <small className="history-failure-reason">{transfer.failureReason || 'Transfer rejected'}</small>}</span><span className="history-amount"><strong>{transfer.direction === 'INCOMING' ? '+' : '−'}{formatMoney(transfer.amountMinor, transfer.currency)}</strong><Badge tone={transfer.status === 'COMPLETED' ? 'success' : transfer.status === 'FAILED' ? 'danger' : transfer.status === 'REVIEW' ? 'warning' : 'neutral'}>{transfer.status}</Badge></span></button>)}</div> : <EmptyState title="No transfers found" message="Try another account or adjust the filters." />}<div className="pagination"><span>{page.total} total</span><div><Button size="sm" variant="ghost" disabled={page.page <= 1} onClick={() => setPage((current) => ({ ...current, page: current.page - 1 }))}>Previous</Button><span>Page {page.page} of {Math.max(page.totalPages, 1)}</span><Button size="sm" variant="ghost" disabled={page.page >= page.totalPages} onClick={() => setPage((current) => ({ ...current, page: current.page + 1 }))}>Next</Button></div></div></Card>{detail && <Dialog open title="Transfer details" onClose={() => setDetail(null)}><div className="review-list"><ReviewRow label="Reference" value={detail.reference || detail.id} /><ReviewRow label="Direction" value={detail.direction} /><ReviewRow label="Amount" value={formatMoney(detail.amountMinor, detail.currency)} /><ReviewRow label="Status" value={detail.status} /><ReviewRow label="Created" value={formatTransferDate(detail.createdAt)} /></div><div className="dialog-actions"><Button onClick={() => setDetail(null)}>Close</Button></div></Dialog>}</div>
+  return <div><div className="page-heading"><div><span className="section-kicker">{historyOnly ? 'Ledger activity' : 'Money movement'}</span><h1>{historyOnly ? 'Transaction history' : 'Transfers'}</h1><p>{historyOnly ? 'Search and inspect authorized transfer activity.' : 'Create a transfer using the backend idempotency safeguards.'}</p></div>{!historyOnly && <Button onClick={onTransfer}><ArrowUpRight size={16} /> New transfer</Button>}</div><Card className="table-card"><div className="history-controls"><select aria-label="Account" className="ui-input" value={accountId} onChange={(event) => { setAccountId(event.target.value); setPage((current) => ({ ...current, page: 1 })) }}><option value="">Choose account</option>{accounts.map((account) => <option value={account.id} key={account.id}>{account.currency} · {account.accountNumber}</option>)}</select><input aria-label="Search transfers" className="ui-input" placeholder="Search reference or ID" value={search} onChange={(event) => { setSearch(event.target.value); setPage((current) => ({ ...current, page: 1 })) }} /><select aria-label="Direction" className="ui-input" value={direction} onChange={(event) => { setDirection(event.target.value); setPage((current) => ({ ...current, page: 1 })) }}><option value="">All directions</option><option value="INCOMING">Incoming</option><option value="OUTGOING">Outgoing</option></select><select aria-label="Status" className="ui-input" value={status} onChange={(event) => { setStatus(event.target.value); setPage((current) => ({ ...current, page: 1 })) }}>  <option value="">All statuses</option><option value="COMPLETED">Completed</option><option value="PENDING">Pending</option><option value="PROCESSING">Processing</option><option value="REVIEW">Review</option><option value="FAILED">Failed</option></select></div>{error && <div className="form-error" role="alert">{error} <button className="text-button" onClick={() => void load()}>Retry</button></div>}{loading ? <div className="table-loading"><Skeleton className="skeleton-line" /><Skeleton className="skeleton-line" /><Skeleton className="skeleton-line" /></div> : rows.length ? <div className="history-list">{rows.map((transfer) => <div className="history-row-wrap" key={transfer.id}><button className="history-row" onClick={async () => { try { const response = await api.get<{ transfer: TransferHistory }>(`/accounts/transfers/${transfer.id}`); setDetail(response.data.transfer) } catch (requestError) { setError(getApiErrorMessage(requestError, 'We could not load this transfer.')) } }}><span className={`history-direction ${transfer.direction.toLowerCase()}`}>{transfer.direction === 'INCOMING' ? <ArrowDownLeft size={15} /> : <ArrowUpRight size={15} />}</span><span className="history-main"><strong>{transfer.reference || `${transfer.direction.toLowerCase()} transfer`}</strong>  <small>{formatTransferDate(transfer.createdAt)} · {transfer.senderAccountNumber || 'External source'} → {transfer.receiverAccountNumber || 'Unknown recipient'}</small>{transfer.status === 'FAILED' && <small className="history-failure-reason">{transfer.failureReason || 'Transfer rejected'}</small>}</span><span className="history-amount"><strong>{transfer.direction === 'INCOMING' ? '+' : '−'}{formatMoney(transfer.amountMinor, transfer.currency)}</strong><Badge tone={transfer.status === 'COMPLETED' ? 'success' : transfer.status === 'FAILED' ? 'danger' : transfer.status === 'REVIEW' ? 'warning' : 'neutral'}>{transfer.status}</Badge></span></button>{canPayAgain(transfer) && <Button size="sm" variant="secondary" onClick={() => onPayAgain(transfer)}>Pay Again</Button>}</div>)}</div> : <EmptyState title="No transfers found" message="Try another account or adjust the filters." />}<div className="pagination"><span>{page.total} total</span><div><Button size="sm" variant="ghost" disabled={page.page <= 1} onClick={() => setPage((current) => ({ ...current, page: current.page - 1 }))}>Previous</Button><span>Page {page.page} of {Math.max(page.totalPages, 1)}</span><Button size="sm" variant="ghost" disabled={page.page >= page.totalPages} onClick={() => setPage((current) => ({ ...current, page: current.page + 1 }))}>Next</Button></div></div></Card>{detail && <Dialog open title="Transfer details" onClose={() => setDetail(null)}><div className="review-list"><ReviewRow label="Reference" value={detail.reference || detail.id} /><ReviewRow label="Direction" value={detail.direction} /><ReviewRow label="Amount" value={formatMoney(detail.amountMinor, detail.currency)} /><ReviewRow label="Status" value={detail.status} /><ReviewRow label="Created" value={formatTransferDate(detail.createdAt)} /></div><div className="dialog-actions">{canPayAgain(detail) && <Button onClick={() => { setDetail(null); onPayAgain(detail) }}>Pay Again</Button>}<Button onClick={() => setDetail(null)}>Close</Button></div></Dialog>}</div>
 }
 
 function AccountsPage({ accounts, loading, error, onRefresh }: { accounts: AccountBalance[]; loading: boolean; error: string; onRefresh: () => void }) {
@@ -548,6 +626,8 @@ function AccountsPage({ accounts, loading, error, onRefresh }: { accounts: Accou
     postalCode: '',
     country: ''
   })
+  const [phoneCountry, setPhoneCountry] = useState<CountryOption>(countries[0])
+  const [phoneLocal, setPhoneLocal] = useState('')
   const [profileLoading, setProfileLoading] = useState(true)
   const [profileSaving, setProfileSaving] = useState(false)
   const [profileError, setProfileError] = useState('')
@@ -570,6 +650,11 @@ function AccountsPage({ accounts, loading, error, onRefresh }: { accounts: Accou
           postalCode: data.user.profile.postalCode || '',
           country: data.user.profile.country || ''
         }
+        const selectedPhoneCountry = findPhoneCountry(loadedProfile.phone)
+        setPhoneCountry(selectedPhoneCountry)
+        setPhoneLocal(loadedProfile.phone.startsWith(selectedPhoneCountry.callingCode)
+          ? loadedProfile.phone.slice(selectedPhoneCountry.callingCode.length)
+          : loadedProfile.phone)
         const complete = isBankingProfileComplete(loadedProfile)
         setProfile(loadedProfile)
         setEditingProfile(!complete)
@@ -602,7 +687,15 @@ function AccountsPage({ accounts, loading, error, onRefresh }: { accounts: Accou
     setProfileError('')
     setProfileMessage('')
     try {
-      const response = await api.patch<{ user: { name: string; profile: BankingProfile }; message: string }>('/users/me', profile)
+      const normalizedLocal = phoneLocal.replace(/\D/g, '')
+      if (normalizedLocal && (normalizedLocal.length < phoneCountry.minDigits || normalizedLocal.length > phoneCountry.maxDigits)) {
+        setProfileError(`Enter a valid ${phoneCountry.name} phone number.`)
+        return
+      }
+      const response = await api.patch<{ user: { name: string; profile: BankingProfile }; message: string }>('/users/me', {
+        ...profile,
+        phone: normalizedLocal ? `${phoneCountry.callingCode}${normalizedLocal}` : ''
+      })
       const savedProfile = {
         name: response.data.user.name,
         phone: response.data.user.profile.phone || '',
@@ -645,12 +738,12 @@ function AccountsPage({ accounts, loading, error, onRefresh }: { accounts: Accou
         {profileMessage && <div className="profile-success" role="status">{profileMessage}</div>}
         {editingProfile ? <form className="banking-profile-form" onSubmit={(event) => void saveProfile(event)}>
           <label className="field"><span className="field-label">Full name</span><input className="ui-input" autoComplete="name" maxLength={120} required value={profile.name} onChange={(event) => updateProfile('name', event.target.value)} /></label>
-          <label className="field"><span className="field-label">Phone number <small>(optional)</small></span><input className="ui-input" type="tel" autoComplete="tel" placeholder="+14155552671" pattern="\+[1-9]\d{7,14}" value={profile.phone} onChange={(event) => updateProfile('phone', event.target.value)} /></label>
+          <label className="field"><span className="field-label">Phone number</span><div className="phone-input-row"><PhoneCountryPicker value={phoneCountry} onChange={setPhoneCountry} /><input className="ui-input" type="tel" autoComplete="tel-national" placeholder="Enter phone number" required value={phoneLocal} onChange={(event) => { setPhoneLocal(event.target.value); updateProfile('phone', event.target.value) }} /></div><span className="field-hint">Stored securely in international E.164 format.</span></label>
           <label className="field"><span className="field-label">Address</span><input className="ui-input" autoComplete="street-address" maxLength={240} required value={profile.addressLine} onChange={(event) => updateProfile('addressLine', event.target.value)} /></label>
           <label className="field"><span className="field-label">City</span><input className="ui-input" autoComplete="address-level2" maxLength={100} required value={profile.city} onChange={(event) => updateProfile('city', event.target.value)} /></label>
           <label className="field"><span className="field-label">State or province</span><input className="ui-input" autoComplete="address-level1" maxLength={100} required value={profile.region} onChange={(event) => updateProfile('region', event.target.value)} /></label>
           <label className="field"><span className="field-label">Postal code</span><input className="ui-input" autoComplete="postal-code" maxLength={20} required value={profile.postalCode} onChange={(event) => updateProfile('postalCode', event.target.value)} /></label>
-          <label className="field"><span className="field-label">Country code</span><input className="ui-input" autoComplete="country" placeholder="IN" pattern="[A-Za-z]{2}" maxLength={2} required value={profile.country} onChange={(event) => updateProfile('country', event.target.value)} /><span className="field-hint">Enter the two-letter ISO country code.</span></label>
+          <div className="field"><span className="field-label">Country of residence</span><ResidenceCountryPicker value={countries.find((country) => country.code === profile.country) || countries[0]} onChange={(country) => updateProfile('country', country.code)} /></div>
           <div className="profile-form-actions"><Button type="submit" disabled={profileSaving}>{profileSaving ? 'Saving profile…' : 'Save banking profile'}</Button></div>
         </form> : <dl className="profile-summary">
           <div><dt>Full name</dt><dd>{profile.name}</dd></div>
@@ -659,12 +752,12 @@ function AccountsPage({ accounts, loading, error, onRefresh }: { accounts: Accou
           <div><dt>City</dt><dd>{profile.city}</dd></div>
           <div><dt>State / province</dt><dd>{profile.region}</dd></div>
           <div><dt>Postal code</dt><dd>{profile.postalCode}</dd></div>
-          <div><dt>Country</dt><dd>{profile.country}</dd></div>
+          <div><dt>Country</dt><dd>{countries.find((country) => country.code === profile.country)?.name || profile.country}</dd></div>
         </dl>}
         <EmailVerification key={user?.email || ''} email={user?.email || ''} disabled={profileSaving} onVerificationChange={(verified) => { if (verified) onRefresh() }} />
       </Card>
       <div className="account-page-grid">
-        <Card><PanelHeading kicker="Your accounts" title="Available INR balances"><Badge tone={accounts.length ? 'success' : 'neutral'}>{accounts.length} connected</Badge></PanelHeading>{loading ? <div className="table-loading"><Skeleton className="skeleton-line" /><Skeleton className="skeleton-line" /></div> : accounts.length ? <div className="account-list">{accounts.map((account) => <div className="account-row" key={account.id}><div className="account-icon"><WalletCards size={17} /></div><div className="account-info"><strong>{account.holderName || user?.name || 'Account holder'}</strong><span>{account.accountNumber || account.id} · {account.status.toLowerCase()} · INR</span></div><div className="account-balance"><strong>{formatMoney(account.balanceMinor, 'INR')}</strong><span>Available INR ledger balance</span></div></div>)}</div> : <EmptyState title="No INR accounts available" message="Complete your profile and verify your email to receive an INR account." />}</Card>
+        <Card><PanelHeading kicker="Your accounts" title="Available INR balances"><Badge tone={accounts.length ? 'success' : 'neutral'}>{accounts.length} connected</Badge></PanelHeading>{loading ? <div className="table-loading"><Skeleton className="skeleton-line" /><Skeleton className="skeleton-line" /></div> : accounts.length ? <div className="account-list">{accounts.map((account) => <div className="account-row" key={account.id}><div className="account-icon"><WalletCards size={17} /></div><div className="account-info"><strong>{account.holderName || user?.name || 'Account holder'}</strong><span>{account.accountNumber} · {account.status.toLowerCase()} · INR</span></div><div className="account-balance"><strong>{formatMoney(account.balanceMinor, 'INR')}</strong><span>Available INR ledger balance</span></div></div>)}</div> : <EmptyState title="No INR accounts available" message="Complete your profile and verify your email to receive an INR account." />}</Card>
       </div>
     </>}
   </div>
@@ -698,9 +791,8 @@ function HelpPage() {
   return <div><div className="page-heading"><div><span className="section-kicker">Support</span><h1>Help center</h1><p>Useful guidance and contact options for the current LedgerGuard workflow.</p></div></div><Card><PanelHeading kicker="Safe operation" title="Transfers and balances" /><div className="help-list"><p><strong>Balances:</strong> values are read from the authorized ledger API and are never calculated in the browser.</p><p><strong>Transfers:</strong> requests use an idempotency key. If a request times out, check status before retrying the same request.</p><p><strong>Authentication:</strong> sessions are held in memory and expire when the page is refreshed.</p></div></Card><Card className="help-contact-card"><PanelHeading kicker="Personal support" title="Get in touch" /><p className="page-copy">Contact details are shown only when configured for public display.</p><div className="contact-grid">{contacts.map(({ label, value, href, icon: Icon, action }) => <div className="contact-card" key={label}><span className="contact-icon"><Icon size={18} aria-hidden="true" /></span><div className="contact-info"><strong>{label}</strong>{value ? <span>{value}</span> : <span className="contact-placeholder">Not configured</span>}</div>{href ? <a className="contact-action" href={href} aria-label={`${action}: ${label}`} {...(href.startsWith('http') ? { target: '_blank', rel: 'noopener noreferrer' } : {})}>{action}{href.startsWith('http') && <ExternalLink size={13} aria-hidden="true" />}</a> : <span className="contact-action contact-disabled" aria-disabled="true">Add details</span>}</div>)}</div></Card></div>
 }
 
-function TransferDialog({ open, accounts, onClose, onCompleted }: { open: boolean; accounts: AccountBalance[]; onClose: () => void; onCompleted: () => void }) {
+function TransferDialog({ open, accounts, initialTransfer, onClose, onCompleted }: { open: boolean; accounts: AccountBalance[]; initialTransfer: TransferHistory | null; onClose: () => void; onCompleted: () => void }) {
   const [step, setStep] = useState<'form' | 'review' | 'result'>('form')
-  const [senderId, setSenderId] = useState('')
   const [receiverId, setReceiverId] = useState('')
   const [recipient, setRecipient] = useState<{ accountId: string; accountNumber: string; holderName: string; status: string; currency: string; eligible: boolean } | null>(null)
   const [recipientLoading, setRecipientLoading] = useState(false)
@@ -725,10 +817,23 @@ function TransferDialog({ open, accounts, onClose, onCompleted }: { open: boolea
   const statusCheckInFlight = useRef(false)
   const pollingTimer = useRef<number | undefined>(undefined)
 
-  const sender = accounts.find((account) => account.id === senderId)
+  const sender = accounts[0]
+  useEffect(() => {
+    if (!open || !initialTransfer || !canPayAgain(initialTransfer)) return
+    setStep('form')
+    setReceiverId(initialTransfer.receiverAccountNumber || '')
+    setAmount(amountInputFromMinor(initialTransfer.amountMinor))
+    setRecipient(null)
+    setRecipientError('')
+    setFormError('')
+    setResult(null)
+    setResultMessage('')
+    setFailedAttempt(null)
+    setUncertain(false)
+    setIdempotencyKey('')
+  }, [initialTransfer, open])
   const reset = () => {
     setStep('form')
-    setSenderId(accounts[0]?.id || '')
     setReceiverId('')
     setRecipient(null)
     setRecipientLoading(false)
@@ -765,10 +870,10 @@ function TransferDialog({ open, accounts, onClose, onCompleted }: { open: boolea
   }, [receiverId])
   const review = () => {
     const minor = toMinorUnits(amount)
-    if (!senderId || !sender) return setFormError('Choose an active sender account.')
+    if (!sender) return setFormError('An active account is required to start a transfer.')
     if (sender.status !== 'ACTIVE') return setFormError('The sender account is not active.')
     if (!receiverId.trim()) return setFormError('Enter a recipient account number.')
-    if (receiverId.trim() === senderId) return setFormError('Sender and recipient accounts must be different.')
+    if (receiverId.trim() === sender.accountNumber) return setFormError('Sender and recipient accounts must be different.')
     if (!recipient) return setFormError(recipientLoading ? 'Wait while the recipient account is verified.' : 'Verify a valid recipient account before continuing.')
     if (!recipient.eligible) return setFormError('This recipient account is not eligible to receive INR transfers.')
     if (!minor) return setFormError('Enter an amount greater than zero with up to two decimal places.')
@@ -787,7 +892,6 @@ function TransferDialog({ open, accounts, onClose, onCompleted }: { open: boolea
     setFailedAttempt(null)
     try {
       const response = await api.post<{ transfer: TransferResult; replayed: boolean }>('/transaction', {
-        senderAccountId: sender.id,
         receiverAccountId: receiverId.trim(),
         amountMinor: minor,
         currency: sender.currency
@@ -811,7 +915,7 @@ function TransferDialog({ open, accounts, onClose, onCompleted }: { open: boolea
               id: `failed:${key}`,
               amountMinor: details.requiredAmountMinor,
               currency: details.currency || sender.currency,
-              sourceAccount: sender.accountNumber || sender.id,
+              sourceAccount: sender.accountNumber,
               availableBalanceMinor: details.availableBalanceMinor,
               requiredAmountMinor: details.requiredAmountMinor
             })
@@ -828,7 +932,7 @@ function TransferDialog({ open, accounts, onClose, onCompleted }: { open: boolea
     }
   }
   const checkStatus = async () => {
-    if (!idempotencyKey || !sender || statusCheckInFlight.current || submissionInFlight.current) return
+    if (!idempotencyKey || !sender || statusCheckInFlight.current || submissionInFlight.current) return null
     statusCheckInFlight.current = true
     setStatusChecking(true)
     setFormError('')
@@ -841,6 +945,7 @@ function TransferDialog({ open, accounts, onClose, onCompleted }: { open: boolea
       setStep('result')
       setUncertain(false)
       if (response.data.transfer.status === 'COMPLETED') onCompleted()
+      return response.data.transfer
     } catch (requestError) {
       if (axios.isAxiosError(requestError) && requestError.response?.status === 404) {
         setResultMessage('No transfer is recorded for this request key yet. If you retry, the original key will be reused safely.')
@@ -851,6 +956,37 @@ function TransferDialog({ open, accounts, onClose, onCompleted }: { open: boolea
       statusCheckInFlight.current = false
       setStatusChecking(false)
     }
+    return null
+  }
+  const payAgain = async () => {
+    let latest = result
+    if (failedAttempt) {
+      latest = await checkStatus()
+      if (!latest || latest.status !== 'FAILED') {
+        setResultMessage('Pay Again is unavailable until the original transfer is confirmed as failed by the server.')
+        return
+      }
+    } else if (latest && latest.status !== 'COMPLETED' && latest.status !== 'FAILED') {
+      latest = await checkStatus()
+      if (!latest || (latest.status !== 'COMPLETED' && latest.status !== 'FAILED')) {
+        setResultMessage('Pay Again is unavailable until the original transfer reaches a definitive completed or failed status.')
+        return
+      }
+    }
+    const receiverAccountNumber = latest?.receiverAccountNumber || recipient?.accountNumber
+    if (!receiverAccountNumber) {
+      setFormError('The original recipient account could not be verified.')
+      return
+    }
+    setStep('form')
+    setReceiverId(receiverAccountNumber)
+    setAmount(amountInputFromMinor(latest?.amountMinor || failedAttempt?.requiredAmountMinor || amount))
+    setResult(null)
+    setFailedAttempt(null)
+    setResultMessage('')
+    setFormError('')
+    setUncertain(false)
+    setIdempotencyKey('')
   }
   useEffect(() => {
     if (step !== 'result' || !result || result.status === 'COMPLETED' || !idempotencyKey) return
@@ -867,8 +1003,8 @@ function TransferDialog({ open, accounts, onClose, onCompleted }: { open: boolea
   return <>
   <Dialog open={open && step !== 'result'} title={step === 'review' ? 'Review transfer' : 'New transfer'} onClose={close}>
     {step === 'form' && <form className="transfer-form" onSubmit={(event) => { event.preventDefault(); review() }}>
-      <p className="transfer-intro">Transfers are checked and committed by the LedgerGuard API. Review every detail before submitting.</p>
-      <label className="field"><span className="field-label">From account</span><select className="ui-input" value={senderId} onChange={(event) => setSenderId(event.target.value)}><option value="">Choose an account</option>{accounts.map((account) => <option value={account.id} key={account.id}>{account.currency} · {account.id.slice(0, 8)}…</option>)}</select></label>
+      <p className="transfer-intro">{initialTransfer ? `Pay Again from ${formatTransferDate(initialTransfer.createdAt)} · Original amount ${formatMoney(initialTransfer.amountMinor, initialTransfer.currency)}. Edit the amount before reviewing.` : 'Transfers are checked and committed by the LedgerGuard API. Review every detail before submitting.'}</p>
+      {sender && <div className="review-list"><ReviewRow label="From account" value={`${sender.currency} account · ${sender.accountNumber}`} /></div>}
       <label className="field"><span className="field-label">Recipient account number</span><input className="ui-input" value={receiverId} onChange={(event) => setReceiverId(event.target.value)} placeholder="Paste the recipient account number" autoComplete="off" /></label>
       {recipientLoading && <div className="admin-secondary" role="status">Verifying recipient account…</div>}
       {recipientError && <div className="form-error" role="alert">{recipientError}</div>}
@@ -877,10 +1013,10 @@ function TransferDialog({ open, accounts, onClose, onCompleted }: { open: boolea
       {formError && <div className="form-error" role="alert">{formError}</div>}
       <div className="dialog-actions"><Button type="button" variant="ghost" onClick={close}>Cancel</Button><Button type="submit" disabled={submitting}>Review transfer</Button></div>
     </form>}
-    {step === 'review' && sender && recipient && <div className="transfer-form"><p className="transfer-intro">Confirm the recipient and amount. The backend will perform the authoritative ownership, balance, currency, and risk checks.</p><div className="review-list"><ReviewRow label="From" value={`${sender.currency} account · ${sender.id.slice(0, 8)}…`} /><ReviewRow label="Recipient" value={recipient.holderName} /><ReviewRow label="Account number" value={recipient.accountNumber} /><ReviewRow label="Eligibility" value={recipient.eligible ? 'Eligible to receive INR' : 'Not eligible'} /><ReviewRow label="Amount" value={formatMoney(toMinorUnits(amount) || '0', sender.currency)} /><ReviewRow label="Processing" value="Atomic ledger transfer" /></div>{formError && <div className="form-error" role="alert">{formError}</div>}<div className="dialog-actions"><Button type="button" variant="ghost" onClick={() => setStep('form')}>Edit</Button><Button type="button" onClick={() => void submit()} disabled={submitting || !recipient.eligible}>{submitting ? 'Submitting securely…' : 'Confirm transfer'}</Button></div></div>}
+    {step === 'review' && sender && recipient && <div className="transfer-form"><p className="transfer-intro">Confirm the recipient and amount. The backend will perform the authoritative ownership, balance, currency, and risk checks.</p><div className="review-list"><ReviewRow label="From" value={`${sender.currency} account · ${sender.accountNumber}`} /><ReviewRow label="Recipient" value={recipient.holderName} /><ReviewRow label="Account number" value={recipient.accountNumber} /><ReviewRow label="Eligibility" value={recipient.eligible ? 'Eligible to receive INR' : 'Not eligible'} /><ReviewRow label="Amount" value={formatMoney(toMinorUnits(amount) || '0', sender.currency)} /><ReviewRow label="Processing" value="Atomic ledger transfer" /></div>{formError && <div className="form-error" role="alert">{formError}</div>}<div className="dialog-actions"><Button type="button" variant="ghost" onClick={() => setStep('form')}>Edit</Button><Button type="button" onClick={() => void submit()} disabled={submitting || !recipient.eligible}>{submitting ? 'Submitting securely…' : 'Confirm transfer'}</Button></div></div>}
     {uncertain && <div className="transfer-uncertain" role="alert"><strong>Outcome uncertain</strong><p>{resultMessage}</p>{formError && <div className="form-error" role="alert">{formError}</div>}<div className="dialog-actions"><Button size="sm" variant="secondary" onClick={() => void checkStatus()} disabled={statusChecking || submitting}>{statusChecking ? 'Checking…' : 'Check transfer status'}</Button><Button size="sm" onClick={() => void submit()} disabled={submitting || statusChecking}>{submitting ? 'Retrying…' : 'Retry same request safely'}</Button></div></div>}
   </Dialog>
-  {open && ((step === 'result' && result) || failedAttempt) && <TransactionResultModal transaction={result || undefined} failureAttempt={failedAttempt || undefined} recipientName={recipient?.holderName} recipientAccount={recipient?.accountNumber} message={resultMessage} onClose={close} onRetry={() => { setFailedAttempt(null); setStep('form'); setResult(null); setFormError('') }} onCheckStatus={() => void checkStatus()} checking={statusChecking} />}
+  {open && ((step === 'result' && result) || failedAttempt) && <TransactionResultModal transaction={result || undefined} failureAttempt={failedAttempt || undefined} recipientName={recipient?.holderName} recipientAccount={recipient?.accountNumber} message={resultMessage} onClose={close} onRetry={() => { setFailedAttempt(null); setStep('form'); setResult(null); setFormError('') }} onCheckStatus={() => void checkStatus()} onPayAgain={payAgain} checking={statusChecking} />}
   </>
 }
 
@@ -908,7 +1044,7 @@ function RiskPanel({ loading, error, permission, transfers, filter, onFilter, on
       setActionLoading(false)
     }
   }
-  return <><Card className="risk-panel" id="risk"><PanelHeading kicker="Control center" title="Risk review"><Badge tone={permission === 'denied' ? 'neutral' : transfers.length ? 'warning' : 'success'}>{permission === 'denied' ? 'Admin only' : `${transfers.length} flagged`}</Badge></PanelHeading>{permission === 'denied' && <EmptyState title="Administrator access required" message="Risk assessments and review actions are restricted by the backend to the configured administrator." />}{permission !== 'denied' && <><div className="risk-toolbar"><span>Risk scores indicate configured signals, not proof of fraud.</span><select className="ui-input" value={filter} onChange={(event) => onFilter(event.target.value)}><option value="">All flagged transfers</option><option value="REVIEW">Awaiting review</option></select><Button size="sm" variant="ghost" onClick={onRetry}>Refresh</Button></div>{error && <div className="form-error" role="alert">{error} <button className="text-button" onClick={onRetry}>Retry</button></div>}{loading ? <div className="table-loading"><Skeleton className="skeleton-line" /><Skeleton className="skeleton-line" /></div> : transfers.length ? <div className="risk-list">{transfers.map((transfer) => <button className="risk-row" key={transfer.id} onClick={() => { setSelected(transfer); setActionError('') }}><span className={`risk-score ${transfer.risk.level.toLowerCase()}`}>{transfer.risk.score}</span><span className="history-main"><strong>{formatMoney(transfer.amountMinor, transfer.currency)} transfer</strong><small>{transfer.id.slice(0, 12)}… · {transfer.risk.reasons.join(' ')}</small></span><Badge tone={transfer.risk.level === 'HIGH' ? 'danger' : transfer.risk.level === 'MEDIUM' ? 'warning' : 'success'}>{transfer.risk.level} · {transfer.risk.decision}</Badge></button>)}</div> : <EmptyState title="No flagged transfers" message="No transfers are currently returned by the admin risk queue." />}</>}</Card>{selected && <Dialog open title="Risk assessment" onClose={() => setSelected(null)}><div className="risk-detail"><div className={`risk-score large ${selected.risk.level.toLowerCase()}`}>{selected.risk.score}</div><strong>{selected.risk.level} risk · {selected.risk.decision}</strong><p>Configured risk signals are informational and do not establish fraud.</p><div className="review-list"><ReviewRow label="Transfer" value={selected.id} /><ReviewRow label="Amount" value={formatMoney(selected.amountMinor, selected.currency)} /><ReviewRow label="Status" value={selected.status} /></div><ul className="risk-reasons">{selected.risk.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>{selected.risk.decision === 'REVIEW' && <><label className="field"><span className="field-label">Review notes (optional)</span><textarea className="ui-input" value={notes} onChange={(event) => setNotes(event.target.value)} maxLength={1000} /></label>{actionError && <div className="form-error">{actionError}</div>}<div className="dialog-actions"><Button variant="danger" onClick={() => setDecision('DECLINE')}>Decline</Button><Button onClick={() => setDecision('APPROVE')}>Approve</Button></div>{decision && <div className="confirm-box"><p>Confirm {decision.toLowerCase()} this transfer?</p><div className="dialog-actions"><Button variant="ghost" onClick={() => setDecision(null)}>Cancel</Button><Button onClick={() => void confirmDecision()} disabled={actionLoading}>{actionLoading ? 'Saving…' : `Confirm ${decision.toLowerCase()}`}</Button></div></div>}</>}</div></Dialog>}</>
+  return <><Card className="risk-panel" id="risk"><PanelHeading kicker="Control center" title="Risk review"><Badge tone={permission === 'denied' ? 'neutral' : transfers.length ? 'warning' : 'success'}>{permission === 'denied' ? 'Admin only' : `${transfers.length} flagged`}</Badge></PanelHeading>{permission === 'denied' && <EmptyState title="Administrator access required" message="Risk assessments and review actions are restricted by the backend to the configured administrator." />}{permission !== 'denied' && <><div className="risk-toolbar"><span>Risk scores indicate configured signals, not proof of fraud.</span><select className="ui-input" value={filter} onChange={(event) => onFilter(event.target.value)}><option value="">All flagged transfers</option><option value="REVIEW">Awaiting review</option></select><Button size="sm" variant="ghost" onClick={onRetry}>Refresh</Button></div>{error && <div className="form-error" role="alert">{error} <button className="text-button" onClick={onRetry}>Retry</button></div>}{loading ? <div className="table-loading"><Skeleton className="skeleton-line" /><Skeleton className="skeleton-line" /></div> : transfers.length ? <div className="risk-list">{transfers.map((transfer) => <button className="risk-row" key={transfer.id} onClick={() => { setSelected(transfer); setActionError('') }}><span className={`risk-score ${transfer.risk.level.toLowerCase()}`}>{transfer.risk.score}</span><span className="history-main"><strong>{formatMoney(transfer.amountMinor, transfer.currency)} transfer</strong><small>{transfer.id.slice(0, 12)}… · {transfer.risk.reasons.join(' ')}</small></span><Badge tone={transfer.risk.level === 'HIGH' ? 'danger' : transfer.risk.level === 'MEDIUM' ? 'warning' : 'success'}>{transfer.risk.level} · {transfer.risk.decision}</Badge></button>)}</div> : <EmptyState title="No flagged transfers" message="No transfers are currently returned by the admin risk queue." />}</>}</Card>{selected && <Dialog open title="Risk assessment" onClose={() => setSelected(null)}><div className="risk-detail"><div className={`risk-score large ${selected.risk.level.toLowerCase()}`}>{selected.risk.score}</div><strong>{selected.risk.level} risk · {selected.risk.decision}</strong><p>Configured risk signals are informational and do not establish fraud.</p><div className="review-list">  <ReviewRow label="Transfer" value={selected.id} /><ReviewRow label="Funding To / Recipient Account" value={selected.receiverAccountNumber || 'Unavailable'} /><ReviewRow label="Amount" value={formatMoney(selected.amountMinor, selected.currency)} /><ReviewRow label="Status" value={selected.status} /></div><ul className="risk-reasons">{selected.risk.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>{selected.risk.decision === 'REVIEW' && <><label className="field"><span className="field-label">Review notes (optional)</span><textarea className="ui-input" value={notes} onChange={(event) => setNotes(event.target.value)} maxLength={1000} /></label>{actionError && <div className="form-error">{actionError}</div>}<div className="dialog-actions"><Button variant="danger" onClick={() => setDecision('DECLINE')}>Decline</Button><Button onClick={() => setDecision('APPROVE')}>Approve</Button></div>{decision && <div className="confirm-box"><p>Confirm {decision.toLowerCase()} this transfer?</p><div className="dialog-actions"><Button variant="ghost" onClick={() => setDecision(null)}>Cancel</Button><Button onClick={() => void confirmDecision()} disabled={actionLoading}>{actionLoading ? 'Saving…' : `Confirm ${decision.toLowerCase()}`}</Button></div></div>}</>}</div></Dialog>}</>
 }
 
 function EmptyState({ title, message }: { title: string; message: string }) { return <div className="empty-state"><div className="empty-icon"><Activity size={18} /></div><strong>{title}</strong><p>{message}</p></div> }
@@ -937,6 +1073,8 @@ function AppContent() {
   return <LoginTransition active={!user && location.pathname !== '/verify-email'}>
     <Routes>
     <Route path="/verify-email" element={<VerifyEmailPage />} />
+    <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+    <Route path="/reset-password" element={<ResetPasswordPage />} />
     <Route path="/admin/*" element={user ? <AdminPortal /> : <AuthPage />} />
     <Route path="*" element={user ? <Dashboard /> : <AuthPage />} />
     </Routes>

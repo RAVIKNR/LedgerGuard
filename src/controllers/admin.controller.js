@@ -10,7 +10,8 @@ const USER_SELECT = {
     email: true,
     status: true,
     emailVerifiedAt: true,
-    createdAt: true
+    createdAt: true,
+    updatedAt: true
 };
 const ADMIN_ROLE_SELECT = {
     id: true,
@@ -58,6 +59,8 @@ function serializeTransfer(transfer) {
         id: transfer.id,
         senderAccountId: transfer.senderAccountId,
         receiverAccountId: transfer.receiverAccountId,
+        senderAccountNumber: transfer.senderAccount?.accountNumber || null,
+        receiverAccountNumber: transfer.receiverAccount?.accountNumber || null,
         amountMinor: transfer.amountMinor.toString(),
         currency: transfer.currency.trim(),
         status: transfer.status,
@@ -74,7 +77,11 @@ function serializeTransfer(transfer) {
 async function listFlaggedTransfers(req, res) {
     const transfers = await prisma.transfer.findMany({
         where: { status: 'REVIEW' },
-        include: { riskAssessment: true },
+        include: {
+            riskAssessment: true,
+            senderAccount: { select: { accountNumber: true } },
+            receiverAccount: { select: { accountNumber: true } }
+        },
         orderBy: { createdAt: 'asc' },
         take: 100
     });
@@ -452,7 +459,7 @@ async function listAccounts(req, res) {
         ...(status ? { status } : {}),
         ...(search ? {
             OR: [
-                { id: { contains: search, mode: 'insensitive' } },
+                { accountNumber: { contains: search } },
                 { currency: { contains: search, mode: 'insensitive' } },
                 { user: { is: { email: { contains: search, mode: 'insensitive' } } } },
                 { user: { is: { name: { contains: search, mode: 'insensitive' } } } }
@@ -465,6 +472,7 @@ async function listAccounts(req, res) {
             select: {
                 id: true,
                 userId: true,
+                accountNumber: true,
                 currency: true,
                 status: true,
                 createdAt: true,
@@ -498,7 +506,7 @@ async function listRecipientAccounts(req, res) {
     const page = Number(req.query.page || 1);
     const pageSize = Math.min(Number(req.query.pageSize || 20), 50);
     const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
-    const accountNumberSearch = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(search)
+    const accountNumberSearch = /^\d{16}$/.test(search)
         ? search
         : null;
     const where = {
@@ -507,7 +515,7 @@ async function listRecipientAccounts(req, res) {
         user: { is: { status: 'ACTIVE', emailVerifiedAt: { not: null } } },
         ...(search ? {
             OR: [
-                ...(accountNumberSearch ? [{ id: accountNumberSearch }] : []),
+                ...(accountNumberSearch ? [{ accountNumber: accountNumberSearch }] : []),
                 { user: { is: { name: { contains: search, mode: 'insensitive' } } } }
             ]
         } : {})
@@ -515,7 +523,7 @@ async function listRecipientAccounts(req, res) {
     const [accounts, total] = await prisma.$transaction([
         prisma.account.findMany({
             where,
-            select: { id: true, user: { select: { name: true } } },
+            select: { id: true, accountNumber: true, user: { select: { name: true } } },
             orderBy: { createdAt: 'desc' },
             skip: (page - 1) * pageSize,
             take: pageSize
@@ -525,7 +533,7 @@ async function listRecipientAccounts(req, res) {
     res.json({
         accounts: accounts.map(account => ({
             accountId: account.id,
-            accountNumber: account.id,
+            accountNumber: account.accountNumber,
             holderName: account.user.name
         })),
         pagination: paginationResponse(page, pageSize, total)
@@ -614,7 +622,11 @@ async function listTransactions(req, res) {
     const [transfers, total] = await prisma.$transaction([
         prisma.transfer.findMany({
             where,
-            include: { riskAssessment: true },
+            include: {
+                riskAssessment: true,
+                senderAccount: { select: { accountNumber: true } },
+                receiverAccount: { select: { accountNumber: true } }
+            },
             orderBy: { createdAt: 'desc' },
             skip,
             take: pageSize

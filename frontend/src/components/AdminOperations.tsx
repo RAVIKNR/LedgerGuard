@@ -17,6 +17,7 @@ type AccountRow = {
   id: string
   userId: string
   currency: string
+  accountNumber: string
   status: string
   createdAt: string
   user: { name: string; email: string }
@@ -157,6 +158,8 @@ type MonitoredTransfer = {
   id: string
   senderAccountId: string | null
   receiverAccountId: string
+  senderAccountNumber: string | null
+  receiverAccountNumber: string | null
   amountMinor: string
   currency: string
   status: string
@@ -202,7 +205,7 @@ function ActionDialog({
   onConfirm: (reason: string) => void
 }) {
   const [reason, setReason] = useState('')
-  return <Dialog open title={title} onClose={() => !saving && onClose()}>
+  return <Dialog open title={title} portal onClose={() => !saving && onClose()}>
     <div className="admin-action-dialog">
       <p>Target: <code>{target}</code></p>
       <label className="field">
@@ -320,13 +323,13 @@ export function AdminAccountsPage({ refreshKey = 0 }: AdminOperationsProps) {
   return <Card>
     <div className="page-heading"><div><span className="section-kicker">Admin operations</span><h1>Account operations</h1><p>Freeze or unfreeze accounts using guarded state transitions. Balances and ledger entries are not editable here.</p></div><Button variant="secondary" onClick={() => void load()} disabled={loading}>Refresh</Button></div>
     <form className="admin-filter-bar" onSubmit={(event) => { event.preventDefault(); setPage(1); setAppliedSearch(search.trim()); setAppliedStatus(status) }}>
-      <input className="ui-input" aria-label="Search accounts" placeholder="Account ID, owner, or currency" maxLength={120} value={search} onChange={(event) => setSearch(event.target.value)} />
+      <input className="ui-input" aria-label="Search accounts" placeholder="Account number, owner, or currency" maxLength={120} value={search} onChange={(event) => setSearch(event.target.value)} />
       <select className="ui-input" aria-label="Filter accounts by status" value={status} onChange={(event) => setStatus(event.target.value)}><option value="">All statuses</option><option>ACTIVE</option><option>FROZEN</option><option>CLOSED</option></select>
       <Button type="submit" size="sm">Apply filters</Button>
     </form>
     {error && <div className="form-error" role="alert">{error}</div>}
-    {loading ? <p className="page-copy">Loading accounts…</p> : <Table headers={['Account', 'Owner', 'Currency', 'Balance', 'Status', 'Created', 'Action']} rows={rows.map(account => [
-      <code>{account.id}</code>,
+    {loading ? <p className="page-copy">Loading accounts…</p> : <Table headers={['Account number', 'Owner', 'Currency', 'Balance', 'Status', 'Created', 'Action']} rows={rows.map(account => [
+      <code>{account.accountNumber}</code>,
       <span><strong>{account.user.name}</strong><small className="admin-secondary">{account.user.email}</small></span>,
       account.eligibleForFinancialOperations ? 'INR' : `${account.currency} (legacy)`,
       `${(Number(account.balanceMinor) / 100).toLocaleString('en-IN', { style: 'currency', currency: 'INR' })}`,
@@ -335,7 +338,7 @@ export function AdminAccountsPage({ refreshKey = 0 }: AdminOperationsProps) {
       account.status !== 'CLOSED' ? <span className="dialog-actions"><Button size="sm" variant={account.status === 'ACTIVE' ? 'danger' : 'secondary'} onClick={() => { setSelected(account); setActionError('') }}>{account.status === 'ACTIVE' ? 'Freeze' : 'Unfreeze'}</Button></span> : '—'
     ])} />}
     <Pager pagination={pagination} onPage={setPage} />
-    {selected && <ActionDialog title={selected.status === 'ACTIVE' ? 'Freeze account' : 'Unfreeze account'} target={selected.id} saving={saving} error={actionError} onClose={() => setSelected(null)} onConfirm={(reason) => void changeStatus(reason)} />}
+    {selected && <ActionDialog title={selected.status === 'ACTIVE' ? 'Freeze account' : 'Unfreeze account'} target={selected.accountNumber} saving={saving} error={actionError} onClose={() => setSelected(null)} onConfirm={(reason) => void changeStatus(reason)} />}
   </Card>
 }
 
@@ -543,7 +546,7 @@ export function AdminTransactionMonitor({ refreshKey = 0 }: AdminOperationsProps
     <div className="page-heading"><div><span className="section-kicker">Transaction monitoring</span><h1>All transfers</h1><p>Filter by status, time range, account, and risk assessment.</p></div><Button variant="secondary" onClick={() => void load()} disabled={loading}>Refresh</Button></div>
     <form className="admin-filter-bar admin-transfer-filters" onSubmit={(event) => { event.preventDefault(); setPage(1); setFilters({ status, accountId: accountId.trim(), riskLevel, riskDecision, from, to }) }}>
       <select className="ui-input" aria-label="Filter transfers by status" value={status} onChange={(event) => setStatus(event.target.value)}><option value="">All statuses</option>{['PENDING', 'PROCESSING', 'COMPLETED', 'REVIEW', 'FAILED', 'REVERSED'].map(value => <option key={value}>{value}</option>)}</select>
-      <input className="ui-input" aria-label="Filter transfers by account ID" placeholder="Account UUID" value={accountId} onChange={(event) => setAccountId(event.target.value)} />
+      <input className="ui-input" aria-label="Filter transfers by account ID" placeholder="Account UUID (internal filter)" value={accountId} onChange={(event) => setAccountId(event.target.value)} />
       <select className="ui-input" aria-label="Filter by risk level" value={riskLevel} onChange={(event) => setRiskLevel(event.target.value)}><option value="">All risk levels</option>{['LOW', 'MEDIUM', 'HIGH'].map(value => <option key={value}>{value}</option>)}</select>
       <select className="ui-input" aria-label="Filter by risk decision" value={riskDecision} onChange={(event) => setRiskDecision(event.target.value)}><option value="">All risk decisions</option>{['PENDING', 'APPROVED', 'REVIEW', 'DECLINED'].map(value => <option key={value}>{value}</option>)}</select>
       <label className="admin-date-filter">From<input className="ui-input" type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label>
@@ -551,12 +554,12 @@ export function AdminTransactionMonitor({ refreshKey = 0 }: AdminOperationsProps
       <Button type="submit" size="sm">Apply filters</Button>
     </form>
     {error && <div className="form-error" role="alert">{error}</div>}
-    {loading ? <p className="page-copy">Loading transfers…</p> : <Table headers={['Transfer', 'Status', 'Amount', 'Created', 'Accounts', 'Risk']} rows={rows.map(transfer => [
+    {loading ? <p className="page-copy">Loading transfers…</p> : <Table headers={['Transfer', 'Status', 'Amount', 'Created', 'Funding To / Recipient Account', 'Risk']} rows={rows.map(transfer => [
       <code>{transfer.id}</code>,
       <Badge tone={transfer.status === 'REVIEW' ? 'warning' : transfer.status === 'COMPLETED' ? 'success' : 'neutral'}>{transfer.status}</Badge>,
       `${transfer.currency} ${(Number(transfer.amountMinor) / 100).toLocaleString()}`,
       new Date(transfer.createdAt).toLocaleString(),
-      <span><small className="admin-secondary">From: {transfer.senderAccountId || 'Funding'}</small><small className="admin-secondary">To: {transfer.receiverAccountId}</small></span>,
+      <span><small className="admin-secondary">Funding To / Recipient Account</small><strong>{transfer.receiverAccountNumber || 'Unavailable'}</strong></span>,
       transfer.risk ? <span>{transfer.risk.level} · {transfer.risk.decision} · {transfer.risk.score}<small className="admin-secondary">{JSON.stringify(transfer.risk.reasons)}</small></span> : 'Not assessed'
     ])} />}
     <Pager pagination={pagination} onPage={setPage} />

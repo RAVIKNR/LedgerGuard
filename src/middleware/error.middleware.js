@@ -15,8 +15,9 @@ function errorHandler(error, req, res, next) {
         statusCode,
         requestId: req.requestId,
         errorName: error.name,
-        prismaCode: error.code
+        prismaCode: error.code || null
     });
+
 
     const responseError = statusCode === 500
         ? { message: 'Internal server error' }

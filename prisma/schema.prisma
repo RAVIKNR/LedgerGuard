@@ -154,6 +154,7 @@ model User {
   postalCode                      String?                   @map("postal_code") @db.VarChar(20)
   country                         String?                   @db.Char(2)
   passwordHash                    String?                   @map("password_hash") @db.VarChar(255)
+  authVersion                     Int                       @default(0) @map("auth_version")
   googleSubject                   String?                   @unique @map("google_subject") @db.VarChar(255)
   emailVerifiedAt                 DateTime?                 @map("email_verified_at")
   emailVerificationTokenHash      String?                   @unique @map("email_verification_token_hash") @db.VarChar(64)
@@ -171,8 +172,25 @@ model User {
   emailOtpChallenge               EmailOtpChallenge?
   transactionNotifications        TransactionNotification[] @relation("NotificationRecipient")
   securityNotifications           SecurityNotification[] @relation("SecurityNotificationRecipient")
+  passwordResetTokens             PasswordResetToken[]
 
   @@map("users")
+}
+
+model PasswordResetToken {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  tokenHash String   @unique @map("token_hash") @db.VarChar(64)
+  expiresAt DateTime @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([tokenHash])
+  @@index([expiresAt])
+  @@index([userId, createdAt])
+  @@map("password_reset_tokens")
 }
 
 model EmailOtpChallenge {
@@ -200,7 +218,7 @@ model EmailOtpChallenge {
 
 model Account {
   id                String           @id @default(uuid()) @db.Uuid
-  accountNumber     String           @unique @default(uuid()) @map("account_number") @db.VarChar(64)
+  accountNumber     String           @unique @map("account_number") @db.VarChar(16)
   userId            String           @map("user_id") @db.Uuid
   currency          String           @db.Char(3)
   status            AccountStatus    @default(ACTIVE)

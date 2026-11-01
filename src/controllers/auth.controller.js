@@ -3,22 +3,29 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const { OAuth2Client } = require('google-auth-library');
 const { prisma } = require('../config/db');
-const { sendVerificationEmail, sendRegistrationConfirmationEmail, sendLoginConfirmationEmail } = require('../services/email.services');
+const { sendVerificationEmail, sendRegistrationConfirmationEmail, sendLoginConfirmationEmail, sendPasswordResetEmail, sendPasswordChangedEmail } = require('../services/email.services');
 
 const googleClient = new OAuth2Client();
 const VERIFICATION_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const VERIFICATION_RESEND_COOLDOWN_MS = 60 * 1000;
+const PASSWORD_RESET_TOKEN_TTL_MS = 15 * 60 * 1000;
+const PASSWORD_RESET_REQUEST_WINDOW_MS = 15 * 60 * 1000;
+const PASSWORD_RESET_REQUEST_LIMIT = 5;
+const resetRequestAttempts = new Map();
+const passwordResetSentMessage = 'Password reset link sent to your registered email.';
+const passwordResetNotFoundMessage = 'No account found with this email address.';
 const publicUserSelect = {
     id: true,
     name: true,
     email: true,
     status: true,
     createdAt: true,
-    emailVerifiedAt: true
+    emailVerifiedAt: true,
+    authVersion: true
 };
 
 function createToken(user) {
-    return jwt.sign({ sub: user.id }, process.env.JWT_SECRET, { expiresIn: '3d' });
+    return jwt.sign({ sub: user.id, authVersion: user.authVersion || 0 }, process.env.JWT_SECRET, { expiresIn: '3d' });
 }
 
 function publicUser(user) {
@@ -198,10 +205,21 @@ async function googleAuth(req, res) {
             errorName: error instanceof Error ? error.name : 'UnknownError'
         })));
         return;
-    } catch (error) {
+        } catch (error) {
+        console.error('Google login Prisma error:', {
+            code: error.code,
+            message: error.message,
+            meta: error.meta
+        });
+
         if (error.code === 'P2002') {
-            return res.status(409).json({ error: { message: 'This Google account is already registered' } });
+            return res.status(409).json({
+                error: {
+                    message: 'This Google account is already registered'
+                }
+            });
         }
+
         throw error;
     }
 }
@@ -302,4 +320,243 @@ function logoutUser(req, res) {
     res.status(200).json({ message: 'Logged out successfully' });
 }
 
-module.exports = { registerUser, loginUser, googleAuth, verifyEmail, resendVerification, logoutUser };
+async function forgotPassword(req, res, next) {
+    const requestId = req.requestId || 'untracked';
+    try {
+        const { email } = req.body;
+        if (!email || !email.trim()) {
+            console.warn(JSON.stringify({ event: 'password_reset_request_rejected', requestId, stage: 'input_validation', reason: 'missing_email' }));
+            return res.status(400).json({ error: { message: 'Email is required' } });
+        }
+
+        const now = Date.now();
+        const requesterKey = req.ip || req.get?.('x-forwarded-for') || 'unknown';
+        const attempts = (resetRequestAttempts.get(requesterKey) || []).filter(timestamp => now - timestamp < PASSWORD_RESET_REQUEST_WINDOW_MS);
+        if (attempts.length >= PASSWORD_RESET_REQUEST_LIMIT) {
+            console.warn(JSON.stringify({
+                event: 'password_reset_request_rate_limited',
+                requestId,
+                stage: 'rate_limit',
+                windowMs: PASSWORD_RESET_REQUEST_WINDOW_MS,
+                limit: PASSWORD_RESET_REQUEST_LIMIT
+            }));
+            return res.status(429).json({ error: { message: 'Too many password reset requests. Please try again later.' } });
+        }
+        attempts.push(now);
+        resetRequestAttempts.set(requesterKey, attempts);
+        if (resetRequestAttempts.size > 10000) {
+            for (const [key, timestamps] of resetRequestAttempts) {
+                if (!timestamps.some(timestamp => now - timestamp < PASSWORD_RESET_REQUEST_WINDOW_MS)) {
+                    resetRequestAttempts.delete(key);
+                }
+            }
+        }
+
+        const normalizedEmail = email.trim().toLowerCase();
+        console.log(JSON.stringify({ event: 'password_reset_request_started', requestId, stage: 'database_lookup' }));
+        const user = await prisma.user.findFirst({
+            where: { email: { equals: normalizedEmail, mode: 'insensitive' } },
+            select: { id: true, email: true, name: true }
+        });
+
+        if (!user) {
+            console.log(JSON.stringify({ event: 'password_reset_account_not_found', requestId, stage: 'database_lookup' }));
+            // This response intentionally reveals account existence per the product requirement.
+            return res.json({ accountFound: false, message: passwordResetNotFoundMessage });
+        }
+
+        const deletedTokens = await prisma.passwordResetToken.deleteMany({ where: { userId: user.id, usedAt: null } });
+        console.log(JSON.stringify({
+            event: 'password_reset_previous_tokens_invalidated',
+            requestId,
+            stage: 'database_cleanup',
+            deletedCount: deletedTokens.count
+        }));
+
+        const token = crypto.randomBytes(32).toString('hex');
+        const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+        const expiresAt = new Date(now + PASSWORD_RESET_TOKEN_TTL_MS);
+
+        await prisma.passwordResetToken.create({
+            data: {
+                userId: user.id,
+                tokenHash,
+                expiresAt
+            }
+        });
+        console.log(JSON.stringify({
+            event: 'password_reset_token_stored',
+            requestId,
+            stage: 'database_create',
+            tokenStorage: 'sha256_hash',
+            tokenHashLength: tokenHash.length,
+            expiresAt: expiresAt.toISOString(),
+            ttlMs: expiresAt.getTime() - now
+        }));
+
+        try {
+            console.log(JSON.stringify({
+                event: 'password_reset_email_started',
+                requestId,
+                stage: 'email_service'
+            }));
+            await sendPasswordResetEmail({
+                email: user.email,
+                name: user.name,
+                token,
+                requestId,
+                expiresAt
+            });
+            console.log(JSON.stringify({ event: 'password_reset_email_completed', requestId, stage: 'email_service' }));
+        } catch (error) {
+            await prisma.passwordResetToken.deleteMany({ where: { tokenHash } });
+            console.error(JSON.stringify({
+                event: 'password_reset_email_failed',
+                requestId,
+                stage: 'email_service',
+                errorName: error instanceof Error ? error.name : 'UnknownError'
+            }));
+        }
+
+        console.log(JSON.stringify({ event: 'password_reset_request_completed', requestId, stage: 'response', statusCode: 200 }));
+        return res.json({ accountFound: true, message: passwordResetSentMessage });
+    } catch (error) {
+        console.error(JSON.stringify({
+            event: 'password_reset_request_failed',
+            requestId,
+            stage: 'controller',
+            errorName: error instanceof Error ? error.name : 'UnknownError',
+            prismaCode: error?.code || null
+        }));
+        return next(error);
+    }
+}
+
+async function findValidResetToken(token) {
+    if (typeof token !== 'string' || !/^[a-f0-9]{64}$/i.test(token)) return null;
+    const tokenHash = hashVerificationToken(token);
+    return prisma.passwordResetToken.findFirst({
+        where: {
+            tokenHash,
+            usedAt: null,
+            expiresAt: { gt: new Date() }
+        },
+        select: { id: true }
+    });
+}
+
+async function verifyResetToken(req, res, next) {
+    try {
+        const token = req.query.token;
+        const resetToken = await findValidResetToken(token);
+        if (!resetToken) {
+            return res.status(400).json({ error: { message: 'This reset link is invalid or expired' } });
+        }
+        return res.json({ valid: true });
+    } catch (error) {
+        console.error(JSON.stringify({
+            event: 'password_reset_token_verification_failed',
+            stage: 'controller',
+            errorName: error instanceof Error ? error.name : 'UnknownError',
+            prismaCode: error?.code || null
+        }));
+        return next(error);
+    }
+}
+
+async function resetPassword(req, res, next) {
+    try {
+        const { token, newPassword, confirmPassword } = req.body;
+
+    // Validate all input
+    if (typeof token !== 'string' || !/^[a-f0-9]{64}$/i.test(token)) {
+        return res.status(400).json({ error: { message: 'This reset link is invalid or expired' } });
+    }
+    if (!newPassword || !confirmPassword) {
+        return res.status(400).json({ error: { message: 'New password and confirmation are required' } });
+    }
+    if (newPassword !== confirmPassword) {
+        return res.status(400).json({ error: { message: 'Passwords do not match' } });
+    }
+    if (newPassword.length < 6) {
+        return res.status(400).json({ error: { message: 'Password must be at least 6 characters long' } });
+    }
+
+    // Hash the received token to look up the record
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+
+    // Find the matching reset-token record — must exist, be unused, and not expired
+    const resetToken = await prisma.passwordResetToken.findFirst({
+        where: { tokenHash },
+        include: { user: { select: { id: true, email: true, name: true } } }
+    });
+
+    if (!resetToken || resetToken.usedAt || resetToken.expiresAt <= new Date()) {
+        return res.status(400).json({ error: { message: 'This reset link is invalid or expired' } });
+    }
+
+    // Hash the new password using bcrypt
+    const passwordHash = await bcrypt.hash(newPassword, 12);
+
+    // Begin transactional database changes
+    let resetCompleted = false;
+    await prisma.$transaction(async (tx) => {
+        // Update the user's password
+        const claimed = await tx.passwordResetToken.updateMany({
+            where: {
+                tokenHash,
+                usedAt: null,
+                expiresAt: { gt: new Date() }
+            },
+            data: { usedAt: new Date() }
+        });
+        if (claimed.count !== 1) {
+            return;
+        }
+        resetCompleted = true;
+        await tx.user.update({
+            where: { id: resetToken.userId },
+            data: {
+                passwordHash,
+                authVersion: { increment: 1 }
+            }
+        });
+
+        // Invalidate all other outstanding reset tokens for this user
+        await tx.passwordResetToken.updateMany({
+            where: {
+                userId: resetToken.userId,
+                tokenHash: { not: tokenHash },
+                usedAt: null
+            },
+            data: { usedAt: new Date() }
+        });
+    });
+    if (!resetCompleted) {
+        return res.status(400).json({ error: { message: 'This reset link is invalid or expired' } });
+    }
+
+    // Send password-changed confirmation email
+    try {
+        await sendPasswordChangedEmail({
+            email: resetToken.user.email,
+            name: resetToken.user.name,
+            occurredAt: new Date()
+        });
+    } catch (error) {
+        console.error('[password-reset] confirmation email failed:', error instanceof Error ? error.message : 'UnknownError');
+    }
+
+        return res.json({ message: 'Your password has been reset successfully. You can now sign in with your new password.' });
+    } catch (error) {
+        console.error(JSON.stringify({
+            event: 'password_reset_completion_failed',
+            stage: 'controller',
+            errorName: error instanceof Error ? error.name : 'UnknownError',
+            prismaCode: error?.code || null
+        }));
+        return next(error);
+    }
+}
+
+module.exports = { registerUser, loginUser, googleAuth, verifyEmail, resendVerification, forgotPassword, verifyResetToken, resetPassword, logoutUser };

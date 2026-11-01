@@ -3,13 +3,15 @@ const { recordAdminAudit } = require('../services/admin-audit.service');
 const { dispatchTransactionNotifications, queueTransferNotifications } = require('../services/transaction-notification.service');
 const crypto = require('crypto');
 const { normalizeInr } = require('../config/currency');
-const { DEMO_RECIPIENT_ACCOUNT_NUMBER } = require('../config/demo');
+const { DEMO_RECIPIENT_ACCOUNT_ID } = require('../config/demo');
+const { createAccountWithNumber } = require('../services/account-number.service');
 
 const INITIAL_DEMO_FUNDING_KEY = 'INITIAL_DEMO_FUNDING:v1';
 const INITIAL_DEMO_FUNDING_MINOR = 1000000n;
 
 function hasCompleteProfile(user) {
-    return [user.name, user.addressLine, user.city, user.region, user.postalCode, user.country]
+    return typeof user.phone === 'string' && /^\+[1-9]\d{7,14}$/.test(user.phone.trim()) &&
+        [user.name, user.addressLine, user.city, user.region, user.postalCode, user.country]
         .every(value => typeof value === 'string' && value.trim().length > 0);
 }
 
@@ -20,7 +22,7 @@ async function fundInitialDemoAccount(req, res) {
             where: { id: req.user.id },
             select: {
                 id: true, name: true, email: true, status: true,
-                addressLine: true, city: true, region: true, postalCode: true, country: true
+                phone: true, addressLine: true, city: true, region: true, postalCode: true, country: true
             }
         });
         if (!user || user.status !== 'ACTIVE' || !hasCompleteProfile(user)) {
@@ -45,7 +47,7 @@ async function fundInitialDemoAccount(req, res) {
             where: { userId_currency: { userId: user.id, currency: 'INR' } }
         });
         if (!account) {
-            account = await tx.account.create({ data: { userId: user.id, currency: 'INR' } });
+            account = await createAccountWithNumber(tx, { userId: user.id, currency: 'INR' });
         }
         if (account.status !== 'ACTIVE') {
             const error = new Error('Your INR demo account is not active');
@@ -72,7 +74,7 @@ async function fundInitialDemoAccount(req, res) {
                 ? balance + entry.amountMinor
                 : balance - entry.amountMinor, 0n);
                 const demoRecipient = await tx.account.findUnique({
-                    where: { accountNumber: DEMO_RECIPIENT_ACCOUNT_NUMBER },
+                    where: { id: DEMO_RECIPIENT_ACCOUNT_ID },
                     select: { accountNumber: true, status: true, currency: true, user: { select: { status: true } } }
                 });
                 return { account, transfer: existing.transfer, balanceMinor, replayed: true, demoRecipient };
@@ -120,7 +122,7 @@ async function fundInitialDemoAccount(req, res) {
             receiverAccount: { user }
         });
         const demoRecipient = await tx.account.findUnique({
-            where: { accountNumber: DEMO_RECIPIENT_ACCOUNT_NUMBER },
+            where: { id: DEMO_RECIPIENT_ACCOUNT_ID },
             select: { accountNumber: true, status: true, currency: true, user: { select: { status: true } } }
         });
         return { account, transfer, balanceMinor: INITIAL_DEMO_FUNDING_MINOR, replayed: false, demoRecipient };

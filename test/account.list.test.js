@@ -29,7 +29,7 @@ function user(overrides = {}) {
         status: 'ACTIVE',
         createdAt: new Date('2026-01-01T00:00:00.000Z'),
         updatedAt: new Date('2026-01-01T00:00:00.000Z'),
-        phone: null,
+        phone: '+919876543210',
         addressLine: '1 Ledger Street',
         city: 'San Francisco',
         region: 'CA',
@@ -63,7 +63,7 @@ describe('authenticated currency accounts', () => {
         expect(prisma.account.findMany).toHaveBeenCalledWith({ where: { userId: authenticatedUserId } });
     });
 
-    it('requires a complete banking profile before account creation, but not a phone number', async () => {
+    it('requires a complete banking profile including a phone number before account creation', async () => {
         prisma.user.findUnique.mockResolvedValueOnce(user({ city: null }));
         const incomplete = await request(app).post('/api/accounts').set('Authorization', 'Bearer test').send({ currency: 'INR' });
         expect(incomplete.status).toBe(400);
@@ -78,7 +78,13 @@ describe('authenticated currency accounts', () => {
         });
         const created = await request(app).post('/api/accounts').set('Authorization', 'Bearer test').send({ currency: 'inr' });
         expect(created.status).toBe(201);
-        expect(prisma.account.create).toHaveBeenCalledWith({ data: { userId: authenticatedUserId, currency: 'INR' } });
+        expect(prisma.account.create).toHaveBeenCalledWith({
+            data: {
+                userId: authenticatedUserId,
+                currency: 'INR',
+                accountNumber: expect.stringMatching(/^\d{16}$/)
+            }
+        });
     });
 
     it('requires email verification from the registered email before account creation', async () => {

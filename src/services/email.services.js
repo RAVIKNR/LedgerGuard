@@ -21,7 +21,9 @@ function smtpErrorDetails(error) {
 }
 
 if (process.env.NODE_ENV !== 'test') {
-  console.log('[email] SMTP configuration', {
+  console.log(JSON.stringify({
+    event: 'email_smtp_configuration',
+    stage: 'transporter_initialization',
     host: smtpHost,
     port: smtpPort,
     secure: smtpSecure,
@@ -32,7 +34,7 @@ if (process.env.NODE_ENV !== 'test') {
       CLIENT_SECRET: Boolean(process.env.CLIENT_SECRET),
       REFRESH_TOKEN: Boolean(process.env.REFRESH_TOKEN),
     },
-  });
+  }));
 }
 
 const transporter = nodemailer.createTransport({
@@ -52,30 +54,66 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-
-
-// Verify the connection configuration
-
-
-
 if (process.env.NODE_ENV !== 'test' && process.env.EMAIL_USER) {
   transporter.verify((error) => {
     if (error) {
-      console.error('[email] SMTP verification failed', smtpErrorDetails(error));
+      console.error(JSON.stringify({
+        event: 'email_smtp_verification_failed',
+        stage: 'transporter.verify',
+        ...smtpErrorDetails(error)
+      }));
     } else {
-      console.log('Email server is ready to send messages');
+      console.log(JSON.stringify({
+        event: 'email_smtp_verified',
+        stage: 'transporter.verify'
+      }));
     }
   });
 }
 
-const sendEmail = async (to, subject, text, html) => {
-  await transporter.sendMail({
+const sendEmail = async (to, subject, text, html, diagnostics = {}) => {
+  const { event, requestId = 'untracked' } = diagnostics;
+  const diagnosticFields = event
+    ? { event, requestId, stage: 'transporter.sendMail' }
+    : null;
+  if (diagnosticFields) {
+    console.log(JSON.stringify({
+      ...diagnosticFields,
+      event: `${event}_sendMail_started`,
+      smtpHost,
+      smtpPort,
+      smtpSecure,
+      requireTLS: smtpRequireTls
+    }));
+  }
+  try {
+    const result = await transporter.sendMail({
     from: `"LedgerGuard" <${process.env.EMAIL_USER}>`,
     to,
     subject,
     text,
     html,
-  });
+    });
+    if (diagnosticFields) {
+      console.log(JSON.stringify({
+        ...diagnosticFields,
+        event: `${event}_sendMail_completed`,
+        acceptedCount: Array.isArray(result.accepted) ? result.accepted.length : 0,
+        rejectedCount: Array.isArray(result.rejected) ? result.rejected.length : 0,
+        responseCode: result.responseCode || null
+      }));
+    }
+    return result;
+  } catch (error) {
+    if (diagnosticFields) {
+      console.error(JSON.stringify({
+        ...diagnosticFields,
+        event: `${event}_sendMail_failed`,
+        ...smtpErrorDetails(error)
+      }));
+    }
+    throw error;
+  }
 };
 
 async function sendTransactionEmail({ email, name, type, amountMinor, currency, reference, occurredAt }) {
@@ -111,6 +149,47 @@ async function sendSecurityNotificationEmail(notification) {
     occurredAt: notification.occurredAt
   });
   await sendEmail(notification.recipientEmail, `${message.subject} | LedgerGuard`, message.text, message.html);
+}
+
+async function sendPasswordResetEmail({ email, name, token, requestId = 'untracked', expiresAt, occurredAt = new Date() }) {
+  const resetUrl = new URL('/reset-password', getFrontendUrl());
+  resetUrl.searchParams.set('token', token);
+  console.log(JSON.stringify({
+    event: 'password_reset_email_prepared',
+    requestId,
+    stage: 'email_template',
+    frontendOrigin: resetUrl.origin,
+    frontendPath: resetUrl.pathname,
+    expiresAt: expiresAt ? new Date(expiresAt).toISOString() : null
+  }));
+  const date = new Date(occurredAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+  const message = renderLedgerGuardEmail({
+    recipientName: name,
+    title: 'Reset your LedgerGuard password',
+    intro: 'A password reset was requested for your LedgerGuard account.',
+    message: `Use the button below to set a new password. This request was made at ${date}. If you did not request a password reset, you can ignore this email and your password will remain unchanged.`,
+    actionLabel: 'Reset password',
+    actionUrl: resetUrl.toString(),
+    expiry: '15 minutes'
+  });
+  return sendEmail(email, 'Reset your LedgerGuard password', message.text, message.html, {
+    event: 'password_reset_email',
+    requestId
+  });
+}
+
+async function sendPasswordChangedEmail({ email, name, occurredAt = new Date() }) {
+  const date = new Date(occurredAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+  const message = renderLedgerGuardEmail({
+    recipientName: name,
+    title: 'Your LedgerGuard password has been changed',
+    intro: 'Your LedgerGuard account password was successfully changed.',
+    message: `The change took effect at ${date}. If you did not change your password, secure your account immediately and contact LedgerGuard support.`,
+    actionLabel: 'Review security settings',
+    actionUrl: `${getFrontendUrl()}/settings`,
+    expiry: 'not applicable'
+  });
+  await sendEmail(email, 'Your LedgerGuard password has been changed', message.text, message.html);
 }
 
 async function sendRegistrationConfirmationEmail({ email, name, occurredAt = new Date() }) {
@@ -884,5 +963,7 @@ module.exports = {
   sendSecurityNotificationEmail,
   sendRegistrationConfirmationEmail,
   sendLoginConfirmationEmail,
-  sendAccountCreatedEmail
+  sendAccountCreatedEmail,
+  sendPasswordResetEmail,
+  sendPasswordChangedEmail
 };

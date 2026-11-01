@@ -19,7 +19,7 @@ async function updateCurrentUserProfile(req, res) {
         where: { id: req.user.id },
         data: {
             name: name.trim(),
-            phone: typeof phone === 'string' && phone.trim() ? phone.trim() : null,
+            phone: typeof phone === 'string' && phone.trim() ? phone.trim().replace(/[\s().-]/g, '').replace(/^00/, '+') : null,
             addressLine: addressLine.trim(),
             city: city.trim(),
             region: region.trim(),
