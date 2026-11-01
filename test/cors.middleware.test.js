@@ -29,7 +29,7 @@ describe('CORS origin policy', () => {
 
         expect(res.vary).toHaveBeenCalledWith('Origin');
         expect(res.set).toHaveBeenCalledWith('Access-Control-Allow-Origin', 'https://ledgerguard.example.test');
-       expect(res.set).toHaveBeenCalledWith('Access-Control-Allow-Headers', 'Authorization, Content-Type, Cache-Control, Idempotency-Key, X-Request-Id');
+       expect(res.set).toHaveBeenCalledWith('Access-Control-Allow-Headers', 'Authorization, Content-Type, Cache-Control, Pragma, Idempotency-Key, X-Request-Id');
         expect(res.status).toHaveBeenCalledWith(204);
         expect(res.end).toHaveBeenCalled();
         expect(next).not.toHaveBeenCalled();
