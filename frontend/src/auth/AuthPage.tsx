@@ -92,7 +92,7 @@ export function AuthPage() {
         <div className="google-login-section">
           <div className="google-login-heading"><span>Quick access</span><span className="google-login-note">Secure sign-in</span></div>
           <div className="google-button-wrap">
-            {googleClientId ? <GoogleLogin onSuccess={async (response) => { if (response.credential) { setServerError(''); try { await googleLogin(response.credential); navigate('/', { replace: true }) } catch (error) { setServerError(getApiErrorMessage(error, 'We could not sign you in with Google.')) } } }} onError={() => setServerError('Google sign-in was cancelled or could not be completed.')} useOneTap={false} theme="outline" size="large" text="continue_with" shape="rectangular" logo_alignment="left" width="350" />
+            {googleClientId ? <GoogleLogin onSuccess={async (response) => { if (response.credential) { setServerError(''); try { await googleLogin(response.credential); navigate('/', { replace: true }) } catch (error) { setServerError(getApiErrorMessage(error, 'We could not sign you in with Google.')) } } }} onError={() => setServerError('Google sign-in was cancelled or could not be completed.')} useOneTap={false} theme="outline" size="large" text="continue_with" shape="rectangular" logo_alignment="left" width="280" />
               : <button type="button" className="google-config-button" onClick={() => setServerError('Google sign-in is not configured. Add VITE_GOOGLE_CLIENT_ID to frontend/.env.local and restart Vite.')}><GoogleMark /> Continue with Google</button>}
           </div>
         </div>
