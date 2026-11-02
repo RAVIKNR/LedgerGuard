@@ -15,6 +15,14 @@ class EmailOtpDeliveryError extends Error {
     }
 }
 
+function smtpErrorDetails(error) {
+    return {
+        code: error?.code || null,
+        command: error?.command || null,
+        responseCode: error?.responseCode || null
+    };
+}
+
 function assertEmailOtpConfiguration() {
     const deliveryMode = process.env.EMAIL_OTP_DELIVERY_MODE || 'smtp';
     if (deliveryMode === 'mailpit') {
