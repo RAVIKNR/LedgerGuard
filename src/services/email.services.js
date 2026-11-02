@@ -71,50 +71,114 @@ if (process.env.NODE_ENV !== 'test' && process.env.EMAIL_USER) {
   });
 }
 
+
 const sendEmail = async (to, subject, text, html, diagnostics = {}) => {
   const { event, requestId = 'untracked' } = diagnostics;
-  const diagnosticFields = event
-    ? { event, requestId, stage: 'transporter.sendMail' }
-    : null;
-  if (diagnosticFields) {
-    console.log(JSON.stringify({
-      ...diagnosticFields,
-      event: `${event}_sendMail_started`,
-      smtpHost,
-      smtpPort,
-      smtpSecure,
-      requireTLS: smtpRequireTls
-    }));
-  }
-  try {
-    const result = await transporter.sendMail({
-    from: `"LedgerGuard" <${process.env.EMAIL_USER}>`,
-    to,
-    subject,
-    text,
-    html,
-    });
+  const deliveryMode = (
+    process.env.EMAIL_OTP_DELIVERY_MODE || 'smtp'
+  ).toLowerCase();
+
+  if (deliveryMode === 'mailjet') {
+    const apiKey = process.env.MAILJET_API_KEY;
+    const secretKey = process.env.MAILJET_SECRET_KEY;
+    const fromEmail = process.env.MAILJET_FROM_EMAIL;
+
+    if (!apiKey || !secretKey || !fromEmail) {
+      throw new Error('Mailjet email configuration is incomplete');
+    }
+
+    const diagnosticFields = event
+      ? { event, requestId, provider: 'mailjet' }
+      : null;
+
     if (diagnosticFields) {
       console.log(JSON.stringify({
         ...diagnosticFields,
-        event: `${event}_sendMail_completed`,
-        acceptedCount: Array.isArray(result.accepted) ? result.accepted.length : 0,
-        rejectedCount: Array.isArray(result.rejected) ? result.rejected.length : 0,
-        responseCode: result.responseCode || null
+        stage: 'delivery_started'
       }));
     }
-    return result;
-  } catch (error) {
-    if (diagnosticFields) {
-      console.error(JSON.stringify({
-        ...diagnosticFields,
-        event: `${event}_sendMail_failed`,
-        ...smtpErrorDetails(error)
-      }));
+
+    try {
+      const response = await fetch('https://api.mailjet.com/v3.1/send', {
+        method: 'POST',
+        headers: {
+          Authorization: `Basic ${Buffer.from(
+            `${apiKey}:${secretKey}`
+          ).toString('base64')}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          Messages: [
+            {
+              From: {
+                Email: fromEmail,
+                Name: 'LedgerGuard'
+              },
+              To: (Array.isArray(to) ? to : [to]).map(email => ({
+                Email: email
+              })),
+              Subject: subject,
+              TextPart: text,
+              HTMLPart: html
+            }
+          ]
+        })
+      });
+
+      const result = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        console.error('[email] Mailjet delivery failed', {
+          event: event || null,
+          status: response.status,
+          error: result?.Messages?.[0]?.Errors || null
+        });
+
+        throw new Error('Mailjet rejected the email');
+      }
+
+      if (result?.Messages?.[0]?.Status !== 'success') {
+        console.error('[email] Mailjet did not accept the email', {
+          event: event || null
+        });
+
+        throw new Error('Mailjet did not accept the email');
+      }
+
+      if (diagnosticFields) {
+        console.log(JSON.stringify({
+          ...diagnosticFields,
+          stage: 'delivery_completed'
+        }));
+      }
+
+      return result;
+    } catch (error) {
+      if (diagnosticFields) {
+        console.error(JSON.stringify({
+          ...diagnosticFields,
+          stage: 'delivery_failed',
+          message: error.message
+        }));
+      }
+
+      throw error;
     }
-    throw error;
   }
+
+  if (deliveryMode === 'smtp') {
+    return transporter.sendMail({
+      from: `"LedgerGuard" <${process.env.EMAIL_USER}>`,
+      to,
+      subject,
+      text,
+      html
+    });
+  }
+
+  throw new Error(`Unsupported email delivery mode: ${deliveryMode}`);
 };
+
 
 async function sendTransactionEmail({ email, name, type, amountMinor, currency, reference, occurredAt }) {
   const amount = new Intl.NumberFormat('en-IN', {
