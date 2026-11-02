@@ -45,6 +45,25 @@ function assertEmailOtpConfiguration() {
         };
     }
 
+    if (deliveryMode === 'mailjet') {
+        const settings = [
+            ...(!process.env.MAILJET_API_KEY ? ['MAILJET_API_KEY'] : []),
+            ...(!process.env.MAILJET_SECRET_KEY ? ['MAILJET_SECRET_KEY'] : []),
+            ...(!process.env.MAILJET_FROM_EMAIL ? ['MAILJET_FROM_EMAIL'] : [])
+        ];
+
+        if (settings.length) {
+            throw new EmailOtpConfigurationError(settings);
+        }
+
+        return {
+            deliveryMode,
+            apiKey: process.env.MAILJET_API_KEY,
+            secretKey: process.env.MAILJET_SECRET_KEY,
+            from: process.env.MAILJET_FROM_EMAIL
+        };
+    }
+
     if (deliveryMode === 'mailpit') {
         const host = process.env.EMAIL_OTP_MAILPIT_HOST || '127.0.0.1';
         const port = Number(process.env.EMAIL_OTP_MAILPIT_PORT || 1025);
@@ -101,6 +120,7 @@ async function sendEmailOtp(email, otp) {
             expiry: 'five minutes'
         });
 
+        // Resend provider
         if (config.deliveryMode === 'resend') {
             const response = await fetch('https://api.resend.com/emails', {
                 method: 'POST',
@@ -128,6 +148,59 @@ async function sendEmailOtp(email, otp) {
             return;
         }
 
+        // Mailjet provider
+        if (config.deliveryMode === 'mailjet') {
+            const credentials = Buffer.from(
+                `${config.apiKey}:${config.secretKey}`
+            ).toString('base64');
+
+            const response = await fetch('https://api.mailjet.com/v3.1/send', {
+                method: 'POST',
+                headers: {
+                    Authorization: `Basic ${credentials}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    Messages: [{
+                        From: {
+                            Email: config.from,
+                            Name: 'LedgerGuard'
+                        },
+                        To: [{ Email: email }],
+                        Subject: 'Your LedgerGuard verification code',
+                        TextPart: message.text,
+                        HTMLPart: message.html
+                    }]
+                })
+            });
+
+            const responseText = await response.text();
+
+            if (!response.ok) {
+                console.error('[email] OTP Mailjet delivery failed', {
+                    status: response.status
+                });
+                throw new Error('Mailjet rejected OTP email');
+            }
+
+            let result;
+
+            try {
+                result = JSON.parse(responseText);
+            } catch {
+                throw new Error('Invalid Mailjet response');
+            }
+
+            if (result?.Messages?.[0]?.Status !== 'success') {
+                console.error('[email] Mailjet did not accept the OTP message');
+                throw new Error('Mailjet message was not accepted');
+            }
+
+            console.log('[email] OTP delivered through Mailjet');
+            return;
+        }
+
+        // SMTP / Mailpit providers
         const transportOptions = {
             host: config.host,
             port: config.port,
@@ -155,6 +228,8 @@ async function sendEmailOtp(email, otp) {
             text: message.text,
             html: message.html
         });
+
+        console.log(`[email] OTP delivered through ${config.deliveryMode}`);
     } catch (error) {
         console.error('[email] OTP delivery failed:', smtpErrorDetails(error));
         throw new EmailOtpDeliveryError();
