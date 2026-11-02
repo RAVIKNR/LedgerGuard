@@ -1,3 +1,4 @@
+const tls = require('tls');
 const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '.env') });
 
@@ -6,10 +7,37 @@ const connectDB = require('./src/config/db');
 
 const port = Number(process.env.PORT) || 3000;
 
+function checkSmtpConnectivity() {
+    const host = process.env.SMTP_HOST || 'smtp.gmail.com';
+    const port = Number(process.env.SMTP_PORT) || 465;
+
+    const socket = tls.connect({
+        host,
+        port,
+        servername: host,
+        timeout: 10000
+    }, () => {
+        console.log(`[smtp-diagnostic] TLS CONNECTION OK: ${host}:${port}`);
+        socket.end();
+    });
+
+    socket.on('timeout', () => {
+        console.error('[smtp-diagnostic] CONNECTION TIMEOUT');
+        socket.destroy();
+    });
+
+    socket.on('error', (error) => {
+        console.error('[smtp-diagnostic] CONNECTION FAILED:', error.code || error.message);
+    });
+}
+
 async function startServer() {
     await connectDB();
     app.listen(port, () => {
         console.log(`LedgerGuard API listening on port ${port}`);
+        if (process.env.SMTP_DIAGNOSTIC === 'true') {
+    checkSmtpConnectivity();
+}
     });
 }
 
