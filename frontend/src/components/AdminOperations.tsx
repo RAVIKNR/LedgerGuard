@@ -521,7 +521,7 @@ export function AdminTransactionMonitor({ refreshKey = 0 }: AdminOperationsProps
   const [pagination, setPagination] = useState<Pagination>({ page: 1, pageSize: 20, total: 0, totalPages: 0 })
   const [page, setPage] = useState(1)
   const [status, setStatus] = useState('')
-  const [accountId, setAccountId] = useState('')
+  const [selectedAccount, setSelectedAccount] = useState<RecipientRow | null>(null)
   const [riskLevel, setRiskLevel] = useState('')
   const [riskDecision, setRiskDecision] = useState('')
   const [from, setFrom] = useState('')
@@ -543,10 +543,14 @@ export function AdminTransactionMonitor({ refreshKey = 0 }: AdminOperationsProps
   useEffect(() => { void load() }, [load])
 
   return <Card className="admin-monitor-card">
-    <div className="page-heading"><div><span className="section-kicker">Transaction monitoring</span><h1>All transfers</h1><p>Filter by status, time range, account, and risk assessment.</p></div><Button variant="secondary" onClick={() => void load()} disabled={loading}>Refresh</Button></div>
-    <form className="admin-filter-bar admin-transfer-filters" onSubmit={(event) => { event.preventDefault(); setPage(1); setFilters({ status, accountId: accountId.trim(), riskLevel, riskDecision, from, to }) }}>
+    <div className="page-heading"><div><span className="section-kicker">Transaction monitoring</span><h1>All transfers</h1><p>Filter by status, time range, account number, and risk assessment.</p></div><Button variant="secondary" onClick={() => void load()} disabled={loading}>Refresh</Button></div>
+    <form className="admin-filter-bar admin-transfer-filters" onSubmit={(event) => { event.preventDefault(); setPage(1); setFilters({ status, accountId: selectedAccount?.accountId || '', riskLevel, riskDecision, from, to }) }}>
       <select className="ui-input" aria-label="Filter transfers by status" value={status} onChange={(event) => setStatus(event.target.value)}><option value="">All statuses</option>{['PENDING', 'PROCESSING', 'COMPLETED', 'REVIEW', 'FAILED', 'REVERSED'].map(value => <option key={value}>{value}</option>)}</select>
-      <input className="ui-input" aria-label="Filter transfers by account ID" placeholder="Account UUID (internal filter)" value={accountId} onChange={(event) => setAccountId(event.target.value)} />
+      <RecipientCombobox
+  selected={selectedAccount}
+  onSelect={setSelectedAccount}
+  onClear={() => setSelectedAccount(null)}
+/>
       <select className="ui-input" aria-label="Filter by risk level" value={riskLevel} onChange={(event) => setRiskLevel(event.target.value)}><option value="">All risk levels</option>{['LOW', 'MEDIUM', 'HIGH'].map(value => <option key={value}>{value}</option>)}</select>
       <select className="ui-input" aria-label="Filter by risk decision" value={riskDecision} onChange={(event) => setRiskDecision(event.target.value)}><option value="">All risk decisions</option>{['PENDING', 'APPROVED', 'REVIEW', 'DECLINED'].map(value => <option key={value}>{value}</option>)}</select>
       <label className="admin-date-filter">From<input className="ui-input" type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label>
