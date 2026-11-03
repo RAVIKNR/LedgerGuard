@@ -209,7 +209,8 @@ async function sendSecurityNotificationEmail(notification) {
     const message = renderFrequencySecurityEmail({
       recipientName: notification.recipientName,
       accountIdentifier: notification.accountId ? `acct-****-${notification.accountId.slice(-4)}` : null,
-      occurredAt: notification.occurredAt
+      occurredAt: notification.occurredAt,
+      actionUrl: `${getFrontendUrl()}/history`
     });
     await sendEmail(notification.recipientEmail, 'Unusually high transaction activity | LedgerGuard', message.text, message.html, { event: 'frequency_alert' });
     return;
