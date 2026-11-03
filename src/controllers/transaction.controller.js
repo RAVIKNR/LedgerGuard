@@ -185,60 +185,70 @@ async function transactionController(req, res) {
                 throw error;
             }
 
-            const rejectTransfer = async (reason, code = 'TRANSFER_REJECTED', availableBalanceMinor = null) => {
-                const failedTransfer = await tx.transfer.create({
-                    data: {
-                        senderAccountId: sender.id,
-                        receiverAccountId: receiver.id,
-                        amountMinor,
-                        currency: input.currency,
-                        status: 'FAILED',
-                        failureReason: reason,
-                        availableBalanceMinor
-                    },
-                    include: { senderAccount: { include: { user: true } }, receiverAccount: true }
-                });
-                await tx.idempotencyKey.create({
-                    data: {
-                        userId: req.user.id,
-                        accountId: sender.id,
-                        transferId: failedTransfer.id,
-                        key: idempotencyKey,
-                        requestHash,
-                        responseStatus: 409,
-                        responseBody: transferResponse(failedTransfer)
-                    }
-                });
-                await queueTransferFailureNotification(tx, failedTransfer);
-                return {
-                    transfer: failedTransfer,
-                    replayed: false,
-                    statusCode: 409,
-                    failure: {
-                        code,
-                        message: reason,
-                        details: {
-                            ...(availableBalanceMinor === null ? {} : { availableBalanceMinor: availableBalanceMinor.toString() }),
-                            requiredAmountMinor: amountMinor.toString(),
-                            currency: input.currency
-                        }
-                    }
-                };
+           
+const rejectTransfer = async (reason, code = 'TRANSFER_REJECTED', availableBalanceMinor = null) => {
+    const failedTransfer = await tx.transfer.create({
+        data: {
+            senderAccountId: sender.id,
+            receiverAccountId: receiver.id,
+            amountMinor,
+            currency: input.currency,
+            status: 'FAILED',
+            failureReason: reason,
+            availableBalanceMinor
+        },
+        include: { senderAccount: { include: { user: true } }, receiverAccount: true }
+    });
 
-                const now = new Date();
-                if (sender.outgoingRestrictionUntil && sender.outgoingRestrictionUntil > now) {
-                    return rejectTransfer(
-                        `Outgoing transfers are temporarily restricted until ${sender.outgoingRestrictionUntil.toISOString()}`,
-                        'OUTGOING_TRANSFER_RESTRICTED'
-                    );
-                }
-                if (sender.outgoingRestrictionUntil) {
-                    await tx.account.update({
-                        where: { id: sender.id },
-                        data: { outgoingRestrictionUntil: null }
-                    });
-                }
-            };
+    await tx.idempotencyKey.create({
+        data: {
+            userId: req.user.id,
+            accountId: sender.id,
+            transferId: failedTransfer.id,
+            key: idempotencyKey,
+            requestHash,
+            responseStatus: 409,
+            responseBody: transferResponse(failedTransfer)
+        }
+    });
+
+    await queueTransferFailureNotification(tx, failedTransfer);
+
+    return {
+        transfer: failedTransfer,
+        replayed: false,
+        statusCode: 409,
+        failure: {
+            code,
+            message: reason,
+            details: {
+                ...(availableBalanceMinor === null ? {} : {
+                    availableBalanceMinor: availableBalanceMinor.toString()
+                }),
+                requiredAmountMinor: amountMinor.toString(),
+                currency: input.currency
+            }
+        }
+    };
+};
+
+// Keep the current time in the main transaction scope.
+const now = new Date();
+
+if (sender.outgoingRestrictionUntil && sender.outgoingRestrictionUntil > now) {
+    return rejectTransfer(
+        `Outgoing transfers are temporarily restricted until ${sender.outgoingRestrictionUntil.toISOString()}`,
+        'OUTGOING_TRANSFER_RESTRICTED'
+    );
+}
+
+if (sender.outgoingRestrictionUntil) {
+    await tx.account.update({
+        where: { id: sender.id },
+        data: { outgoingRestrictionUntil: null }
+    });
+}
+
 
             const senderUser = await tx.user.findUnique({
                 where: { id: sender.userId },
