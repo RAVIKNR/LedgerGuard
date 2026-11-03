@@ -2,7 +2,15 @@ const crypto = require('crypto');
 const { Prisma } = require('@prisma/client');
 const { prisma } = require('../config/db');
 const { assessTransfer } = require('../services/risk.service');
-const { dispatchTransactionNotifications, queueTransferNotifications, queueTransferFailureNotification } = require('../services/transaction-notification.service');
+const {
+    dispatchTransactionNotifications,
+    queueTransferNotifications,
+    queueTransferFailureNotification,
+    queueTransferReviewNotification
+} = require('../services/transaction-notification.service');
+const { getReviewDurationHours } = require('../config/review-policy');
+
+const REVIEW_DURATION_HOURS = getReviewDurationHours();
 
 function transferResponse(transfer) {
     const response = {
@@ -287,11 +295,17 @@ async function transactionController(req, res) {
             });
 
             if (risk.level === 'HIGH') {
+                const reviewDeadlineAt = new Date(Date.now() + REVIEW_DURATION_HOURS * 60 * 60 * 1000);
                 const heldTransfer = await tx.transfer.update({
                     where: { id: transfer.id },
-                    data: { status: 'REVIEW' },
-                    include: { riskAssessment: true }
+                    data: { status: 'REVIEW', reviewDeadlineAt },
+                    include: {
+                        riskAssessment: true,
+                        senderAccount: { include: { user: true } },
+                        receiverAccount: true
+                    }
                 });
+                await queueTransferReviewNotification(tx, heldTransfer, reviewDeadlineAt);
                 const response = transferResponse(heldTransfer);
                 await tx.idempotencyKey.create({
                     data: {
@@ -355,7 +369,7 @@ async function transactionController(req, res) {
             transfer: transferResponse(result.transfer),
             replayed: result.replayed
         });
-        if (result.transfer.status === 'COMPLETED') {
+        if (result.transfer.status === 'COMPLETED' || result.transfer.status === 'REVIEW') {
             void dispatchTransactionNotifications(result.transfer.id);
         }
     } catch (error) {

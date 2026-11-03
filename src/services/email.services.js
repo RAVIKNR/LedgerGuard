@@ -75,7 +75,9 @@ if (process.env.NODE_ENV !== 'test' && process.env.EMAIL_USER) {
 const sendEmail = async (to, subject, text, html, diagnostics = {}) => {
   const { event, requestId = 'untracked' } = diagnostics;
   const deliveryMode = (
-    process.env.EMAIL_OTP_DELIVERY_MODE || 'smtp'
+    process.env.NODE_ENV === 'test'
+      ? process.env.EMAIL_OTP_DELIVERY_MODE || 'smtp'
+      : 'mailjet'
   ).toLowerCase();
 
   if (deliveryMode === 'mailjet') {
@@ -213,6 +215,49 @@ async function sendSecurityNotificationEmail(notification) {
     occurredAt: notification.occurredAt
   });
   await sendEmail(notification.recipientEmail, `${message.subject} | LedgerGuard`, message.text, message.html);
+}
+
+async function sendTransferReviewEmail({ email, name, amountMinor, currency, reference, risk, recipientAccount, reviewDeadlineAt }) {
+  const amount = new Intl.NumberFormat('en-IN', {
+    style: 'currency',
+    currency: currency.trim()
+  }).format(Number(amountMinor) / 100);
+  const reasons = Array.isArray(risk?.reasons) ? risk.reasons.join('; ') : 'Configured risk signals were detected';
+  const expiry = new Date(reviewDeadlineAt).toISOString();
+  const supportContact = process.env.SUPPORT_EMAIL || process.env.MAILJET_FROM_EMAIL;
+  const message = renderLedgerGuardEmail({
+    recipientName: name,
+    title: 'Transfer held for security review',
+    intro: `Your ${amount} ${currency.trim()} transfer is currently under REVIEW.`,
+    message: [
+      `Recipient account: acct-****-${String(recipientAccount?.accountNumber || '').slice(-4)}`,
+      `Transfer reference: ${reference || 'Unavailable'}`,
+      `Risk score: ${risk?.score ?? 'Unavailable'} (${risk?.level || 'HIGH'})`,
+      `Risk reasons: ${reasons}`,
+      `Review expiry: ${expiry} UTC`,
+      `Verified LedgerGuard support contact: ${supportContact || 'Use the support contact configured for your account'}`,
+      'You have a 24-hour objection window from the time this review began. If no objection is recorded before the deadline, the configured automatic-resolution policy may approve the transfer only when explicitly enabled by an authorized operator.'
+      ,'LedgerGuard will never ask you to share an OTP, PIN, password, or verification code.'
+    ].join('\n'),
+    expiry: expiry
+  });
+  await sendEmail(email, 'Security review required | LedgerGuard', message.text, message.html, { event: 'transfer_review' });
+}
+
+async function sendTransferDecisionEmail({ email, name, amountMinor, currency, reference, decision, occurredAt }) {
+  const amount = new Intl.NumberFormat('en-IN', {
+    style: 'currency',
+    currency: currency.trim()
+  }).format(Number(amountMinor) / 100);
+  const status = decision === 'APPROVED' ? 'APPROVED' : 'REJECTED';
+  const message = renderLedgerGuardEmail({
+    recipientName: name,
+    title: `Transfer ${status.toLowerCase()}`,
+    intro: `Your ${amount} ${currency.trim()} transfer has been ${status}.`,
+    message: `Transfer reference: ${reference || 'Unavailable'}\nStatus: ${status}\nDecision time: ${new Date(occurredAt).toISOString()} UTC`,
+    expiry: 'not applicable'
+  });
+  await sendEmail(email, `Transfer ${status.toLowerCase()} | LedgerGuard`, message.text, message.html, { event: 'transfer_decision' });
 }
 
 async function sendPasswordResetEmail({ email, name, token, requestId = 'untracked', expiresAt, occurredAt = new Date() }) {
@@ -977,7 +1022,7 @@ async function sendVerificationEmail(email, name, token) {
     expiry: '24 hours'
   });
 
-  const deliveryMode = process.env.EMAIL_OTP_DELIVERY_MODE || 'smtp';
+  const deliveryMode = process.env.NODE_ENV === 'test' ? 'smtp' : 'mailjet';
 
   // Mailjet provider
   if (deliveryMode === 'mailjet') {
@@ -1108,6 +1153,8 @@ module.exports = {
   sendTransactionEmail,
   sendFailedTransactionEmail,
   sendSecurityNotificationEmail,
+  sendTransferReviewEmail,
+  sendTransferDecisionEmail,
   sendRegistrationConfirmationEmail,
   sendLoginConfirmationEmail,
   sendAccountCreatedEmail,

@@ -529,6 +529,9 @@ export function AdminTransactionMonitor({ refreshKey = 0 }: AdminOperationsProps
   const [filters, setFilters] = useState({ status: '', accountId: '', riskLevel: '', riskDecision: '', from: '', to: '' })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [selectedDecision, setSelectedDecision] = useState<{ transfer: MonitoredTransfer; decision: 'APPROVE' | 'DECLINE' } | null>(null)
+  const [decisionSaving, setDecisionSaving] = useState(false)
+  const [decisionError, setDecisionError] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true); setError('')
@@ -541,6 +544,21 @@ export function AdminTransactionMonitor({ refreshKey = 0 }: AdminOperationsProps
     finally { setLoading(false) }
   }, [filters, getError, page, refreshKey])
   useEffect(() => { void load() }, [load])
+
+  async function decideTransfer(reason: string) {
+    if (!selectedDecision) return
+    setDecisionSaving(true); setDecisionError('')
+    try {
+      await api.post(`/admin/transfers/${selectedDecision.transfer.id}/decision`, {
+        decision: selectedDecision.decision,
+        notes: reason
+      })
+      setSelectedDecision(null)
+      await load()
+    } catch (requestError) {
+      setDecisionError(await getError(requestError, 'Could not resolve this transfer.'))
+    } finally { setDecisionSaving(false) }
+  }
 
   return <Card className="admin-monitor-card">
     <div className="page-heading"><div><span className="section-kicker">Transaction monitoring</span><h1>All transfers</h1><p>Filter by status, time range, account number, and risk assessment.</p></div><Button variant="secondary" onClick={() => void load()} disabled={loading}>Refresh</Button></div>
@@ -558,14 +576,26 @@ export function AdminTransactionMonitor({ refreshKey = 0 }: AdminOperationsProps
       <Button type="submit" size="sm">Apply filters</Button>
     </form>
     {error && <div className="form-error" role="alert">{error}</div>}
-    {loading ? <p className="page-copy">Loading transfers…</p> : <Table headers={['Transfer', 'Status', 'Amount', 'Created', 'Funding To / Recipient Account', 'Risk']} rows={rows.map(transfer => [
+    {loading ? <p className="page-copy">Loading transfers…</p> : <Table headers={['Transfer', 'Status', 'Amount', 'Created', 'Funding To / Recipient Account', 'Risk', 'Action']} rows={rows.map(transfer => [
       <code>{transfer.id}</code>,
       <Badge tone={transfer.status === 'REVIEW' ? 'warning' : transfer.status === 'COMPLETED' ? 'success' : 'neutral'}>{transfer.status}</Badge>,
       `${transfer.currency} ${(Number(transfer.amountMinor) / 100).toLocaleString()}`,
       new Date(transfer.createdAt).toLocaleString(),
       <span><small className="admin-secondary">Funding To / Recipient Account</small><strong>{transfer.receiverAccountNumber || 'Unavailable'}</strong></span>,
-      transfer.risk ? <span>{transfer.risk.level} · {transfer.risk.decision} · {transfer.risk.score}<small className="admin-secondary">{JSON.stringify(transfer.risk.reasons)}</small></span> : 'Not assessed'
+      transfer.risk ? <span>{transfer.risk.level} · {transfer.risk.decision} · {transfer.risk.score}<small className="admin-secondary">{JSON.stringify(transfer.risk.reasons)}</small></span> : 'Not assessed',
+      transfer.status === 'REVIEW' ? <span className="dialog-actions">
+        <Button size="sm" onClick={() => { setSelectedDecision({ transfer, decision: 'APPROVE' }); setDecisionError('') }}>Approve</Button>
+        <Button size="sm" variant="danger" onClick={() => { setSelectedDecision({ transfer, decision: 'DECLINE' }); setDecisionError('') }}>Reject</Button>
+      </span> : '—'
     ])} />}
     <Pager pagination={pagination} onPage={setPage} />
+    {selectedDecision && <ActionDialog
+      title={selectedDecision.decision === 'APPROVE' ? 'Approve reviewed transfer' : 'Reject reviewed transfer'}
+      target={selectedDecision.transfer.id}
+      saving={decisionSaving}
+      error={decisionError}
+      onClose={() => setSelectedDecision(null)}
+      onConfirm={(reason) => void decideTransfer(reason)}
+    />}
   </Card>
 }

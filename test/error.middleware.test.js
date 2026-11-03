@@ -33,9 +33,9 @@ describe('error middleware redaction', () => {
 
         errorHandler(Object.assign(new Error(marker), { meta: { detail: marker } }), req, res, jest.fn());
 
-        expect(log).toHaveBeenCalledWith('Request failed', expect.not.objectContaining({
-            message: marker,
-            meta: expect.anything()
+        expect(log).toHaveBeenCalledWith('Request failed', expect.objectContaining({
+            errorName: 'Error',
+            path: '/api/action'
         }));
         expect(JSON.stringify(log.mock.calls)).not.toContain(marker);
         expect(res.status).toHaveBeenCalledWith(500);

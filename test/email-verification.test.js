@@ -22,6 +22,10 @@ jest.mock('../src/services/email-otp.service', () => ({
     assertEmailOtpConfiguration: jest.fn(),
     sendEmailOtp: jest.fn()
 }));
+jest.mock('../src/services/email.services', () => ({
+    ...jest.requireActual('../src/services/email.services'),
+    sendAccountCreatedEmail: jest.fn().mockResolvedValue(undefined)
+}));
 
 const request = require('supertest');
 const jwt = require('jsonwebtoken');

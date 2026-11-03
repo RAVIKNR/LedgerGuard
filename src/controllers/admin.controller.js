@@ -2,7 +2,12 @@ const { Prisma } = require('@prisma/client');
 const { prisma } = require('../config/db');
 const { recordAdminAudit, sanitizeAuditReason } = require('../services/admin-audit.service');
 const { queueSecurityNotification, dispatchSecurityNotification } = require('../services/security-notification.service');
-const { queueTransferFailureNotification, dispatchTransactionNotifications } = require('../services/transaction-notification.service');
+const {
+    queueTransferFailureNotification,
+    queueTransferDecisionNotification,
+    dispatchTransactionNotifications
+} = require('../services/transaction-notification.service');
+const { settleReviewedTransfer } = require('../services/transfer-settlement.service');
 
 const USER_SELECT = {
     id: true,
@@ -127,61 +132,13 @@ async function decideTransfer(req, res) {
             throw error;
         }
 
+        let decidedTransfer = transfer;
         if (decision === 'APPROVE') {
-            if (!transfer.senderAccountId) {
-                const error = new Error('A reviewed transfer must have a sender account');
-                error.statusCode = 409;
-                throw error;
-            }
-            await tx.$queryRaw`
-                SELECT id FROM "accounts"
-                WHERE id IN (${transfer.senderAccountId}::uuid, ${transfer.receiverAccountId}::uuid)
-                ORDER BY id FOR UPDATE
-            `;
-            const accounts = await tx.account.findMany({
-                where: { id: { in: [transfer.senderAccountId, transfer.receiverAccountId] } },
-                select: { id: true, status: true }
-            });
-            if (accounts.length !== 2 || accounts.some(account => account.status !== 'ACTIVE')) {
-                const error = new Error('Both accounts must be active to approve this transfer');
-                error.statusCode = 409;
-                throw error;
-            }
-            const balanceRows = await tx.$queryRaw`
-                SELECT COALESCE(SUM(
-                    CASE WHEN entry_type = 'CREDIT' THEN amount_minor ELSE -amount_minor END
-                ), 0)::bigint AS balance
-                FROM "ledger_entries"
-                WHERE account_id = ${transfer.senderAccountId}::uuid
-            `;
-            if (BigInt(balanceRows[0].balance) < transfer.amountMinor) {
-                const error = new Error('Insufficient funds to approve this transfer');
-                error.statusCode = 409;
-                throw error;
-            }
-            await tx.ledgerEntry.createMany({
-                data: [
-                    {
-                        transferId: transfer.id,
-                        accountId: transfer.senderAccountId,
-                        entryType: 'DEBIT',
-                        amountMinor: transfer.amountMinor,
-                        currency: transfer.currency
-                    },
-                    {
-                        transferId: transfer.id,
-                        accountId: transfer.receiverAccountId,
-                        entryType: 'CREDIT',
-                        amountMinor: transfer.amountMinor,
-                        currency: transfer.currency
-                    }
-                ]
-            });
-            await tx.transfer.update({
-                where: { id: transfer.id },
-                data: { status: 'COMPLETED' }
-            });
+            decidedTransfer = await settleReviewedTransfer(tx, transfer.id);
         } else {
+            await tx.$queryRaw`SELECT id FROM "transfers" WHERE id = ${transfer.id}::uuid FOR UPDATE`;
+            const current = await tx.transfer.findUnique({ where: { id: transfer.id }, select: { status: true } });
+            if (!current || current.status !== 'REVIEW') throw invalidTransition('Transfer has already been resolved');
             await tx.transfer.update({
                 where: { id: transfer.id },
                 data: { status: 'FAILED', failureReason: notes || 'Transfer declined during review' }
@@ -191,6 +148,11 @@ async function decideTransfer(req, res) {
                 status: 'FAILED',
                 failureReason: notes || 'Transfer declined during review'
             });
+            decidedTransfer = {
+                ...transfer,
+                status: 'FAILED',
+                failureReason: notes || 'Transfer declined during review'
+            };
         }
 
         await tx.riskAssessment.update({
@@ -218,11 +180,12 @@ async function decideTransfer(req, res) {
                 currency: transfer.currency.trim()
             }
         });
+        await queueTransferDecisionNotification(tx, decidedTransfer, decision === 'APPROVE' ? 'APPROVED' : 'REJECTED');
         return { transferId: transfer.id, decision: recorded.decision, decidedAt: recorded.createdAt };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 
     res.status(200).json({ decision: result });
-    if (decision === 'DECLINE') void dispatchTransactionNotifications(result.transferId);
+    void dispatchTransactionNotifications(result.transferId);
 }
 
 async function listUsers(req, res) {

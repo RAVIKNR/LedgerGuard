@@ -26,7 +26,9 @@ function smtpErrorDetails(error) {
 }
 
 function assertEmailOtpConfiguration() {
-    const deliveryMode = process.env.EMAIL_OTP_DELIVERY_MODE || 'smtp';
+    const deliveryMode = process.env.NODE_ENV === 'test' || process.env.NODE_ENV === 'development'
+        ? process.env.EMAIL_OTP_DELIVERY_MODE || 'smtp'
+        : 'mailjet';
 
     if (deliveryMode === 'resend') {
         const settings = [

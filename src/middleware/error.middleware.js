@@ -9,26 +9,16 @@ function notFound(req, res) {
 function errorHandler(error, req, res, next) {
     const statusCode = error.statusCode || 500;
 
-    // Log the complete error for debugging in Render
-    console.error('[UNHANDLED ERROR]', {
-        name: error.name,
-        message: error.message,
-        stack: error.stack,
-        code: error.code || null,
-        requestId: req.requestId,
-        method: req.method,
-        path: req.originalUrl || req.path
-    });
-
-    // Structured request error log
+    const safeCode = typeof error.code === 'string' && /^[A-Z0-9_]{1,40}$/.test(error.code)
+        ? error.code
+        : null;
     console.error('Request failed', {
         method: req.method,
         path: req.path,
         statusCode,
         requestId: req.requestId,
-        errorName: error.name,
-        errorMessage: error.message,
-        prismaCode: error.code || null
+        errorName: typeof error.name === 'string' ? error.name : 'Error',
+        prismaCode: safeCode
     });
 
     // Keep internal error details hidden from API clients

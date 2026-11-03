@@ -53,12 +53,9 @@ async function assessTransfer(tx, { senderAccountId, receiverAccountId, amountMi
         reasons.push('Amount is large for an account with no completed transfer history');
     }
 
-    if (velocity >= 5) {
+    if (velocity >= 10) {
         score += 25;
-        reasons.push('Five or more transfers were attempted in the last 24 hours');
-    } else if (velocity >= 3) {
-        score += 15;
-        reasons.push('Three or more transfers were attempted in the last 24 hours');
+        reasons.push('Ten or more transfers were attempted in the last 24 hours');
     }
 
     if (failedAttempts >= 3) {
