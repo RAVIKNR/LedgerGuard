@@ -1,398 +1,238 @@
 # LedgerGuard
 
-LedgerGuard is a backend service for managing users, accounts, and financial
-transactions.
+**A ledger-first banking backend with a React dashboard.**
 
-The repository also contains a React/Vite frontend in
-[frontend/](./frontend/). The frontend is the portfolio-facing dashboard;
-the Express API remains authoritative for authentication, balances, transfers,
-ledger entries, and risk decisions.
+LedgerGuard is a portfolio project exploring account management, double-entry accounting, idempotent transfers, risk review, reconciliation, and administrative controls. The Express API is authoritative for authentication, account state, balances, transfers, and ledger postings.
 
-## Phase 1 setup
+> **Disclaimer:** This is an educational/portfolio project, not a real bank or a production-ready financial service. Do not use it to hold or move real funds.
 
-The Phase 1 foundation includes:
+## Contents
 
-- Express API with centralized error handling
-- PostgreSQL connection through Prisma
-- Environment-based configuration
-- Request logging and validation
-- `GET /health` health check
-- Jest and Supertest test setup
+- [Highlights](#highlights)
+- [Architecture](#architecture)
+- [Technology stack](#technology-stack)
+- [Transfer lifecycle](#transfer-lifecycle)
+- [Getting started](#getting-started)
+- [Environment configuration](#environment-configuration)
+- [Running the frontend](#running-the-frontend)
+- [API overview](#api-overview)
+- [Background jobs](#background-jobs)
+- [Testing](#testing)
+- [Deployment](#deployment)
+- [Security notes](#security-notes)
+- [Documentation](#documentation)
 
-## Phase 2 database design
+## Highlights
 
-The initial migration in
-`prisma/migrations/202610241003_phase2_database_design` creates:
+- Double-entry ledger with immutable posted entries.
+- Money stored as PostgreSQL `BIGINT` minor units, never floating-point values.
+- User-scoped idempotency keys bound to a SHA-256 request hash.
+- Account locking and serializable database transactions for transfer posting.
+- Explainable risk rules with administrator review for high-risk transfers.
+- Reconciliation reports that identify discrepancies without modifying financial records.
+- Audited administrative actions and compensating reversals.
+- Optional Redis/BullMQ workers for retryable background jobs.
+- React, Vite, and TypeScript frontend.
 
-- `users`, `accounts`, and `transfers`
-- append-only `ledger_entries`
-- scoped `idempotency_keys`
-- one-to-one `risk_assessments`
-- `reconciliation_runs` with discrepancy JSON
+## Architecture
 
-Money is stored as PostgreSQL `BIGINT` minor units (`amount_minor`), never as
-floating-point values. Foreign keys, indexes, and unique constraints are
-defined in the migration.
+```mermaid
+flowchart LR
+    Browser --> Frontend[React + Vite]
+    Frontend --> API[Express API]
+    API --> Auth[Authentication and authorization]
+    API --> Transfer[Transfer and risk services]
+    Transfer --> DB[(PostgreSQL + Prisma)]
+    Transfer --> Ledger[Append-only ledger]
+    API --> Queue[Redis / BullMQ]
+    Queue --> Worker[Background worker]
+    Worker --> DB
+    API --> Email[Email transport]
+```
 
-With PostgreSQL running and `DATABASE_URL` configured, apply the migration:
+PostgreSQL is the source of truth for account and ledger data. The frontend communicates with the API over HTTP. The optional worker runs separately from the API process.
 
+## Technology stack
+
+| Area | Technologies |
+|---|---|
+| Backend | Node.js 20+, Express 5 |
+| Database | PostgreSQL 14+, Prisma |
+| Jobs | Redis, BullMQ (optional) |
+| Frontend | React 18, Vite, TypeScript |
+| UI | Tailwind CSS, Framer Motion, Lucide |
+| Validation/forms | Zod, React Hook Form |
+| Testing | Jest, Supertest |
+| ML experiment | Python, FastAPI (optional and isolated) |
+
+## Transfer lifecycle
+
+1. An authenticated client submits sender and receiver account IDs, `amountMinor`, currency, and an `Idempotency-Key`.
+2. The API validates the request and evaluates configured risk rules.
+3. Low- and medium-risk transfers can proceed to posting. High-risk transfers are held for administrator review and receive no ledger entries while on hold.
+4. The API locks both accounts and checks the sender's ledger-derived balance inside a serializable PostgreSQL transaction.
+5. The transfer and its matching debit and credit entries are committed together.
+6. A retry with the same key and same request identity returns the original transfer. Reusing the key with a different payload is rejected.
+
+Each completed customer transfer must have one debit and one credit for the same minor-unit amount. Administrative funding is represented by a completed transfer with a credit entry and no sender account. Database constraints enforce valid posted-ledger shapes.
+
+Ledger entries are immutable. Corrections use compensating transfers rather than editing or deleting existing entries.
+
+## Getting started
+
+### Requirements
+
+- Node.js 20 or later
+- PostgreSQL 14 or later
+- npm
+- Redis only if you plan to run the background worker
+
+### 1. Install backend dependencies
+
+```bash
+npm install
+```
+
+### 2. Configure PostgreSQL
+
+Create a local database named `ledgerguard`. Copy the backend environment template:
+
+**PowerShell**
 ```powershell
+Copy-Item .env.example .env
+```
+
+Set at least `DATABASE_URL` and a strong, randomly generated `JWT_SECRET` in the backend `.env` file.
+
+### 3. Generate Prisma Client and apply migrations
+
+```bash
+npm run prisma:generate
+npx prisma migrate deploy
+```
+
+For local development, the repository also provides:
+
+```bash
 npm run prisma:migrate
 ```
 
-## Requirements
+### 4. Start the API
 
-- Node.js 20+
-- PostgreSQL 14+
+```bash
+npm run dev
+```
 
-## Setup
+The API listens on port `3000` by default and connects to PostgreSQL before accepting requests.
 
-1. Install dependencies:
+## Environment configuration
 
-   ```powershell
-   npm install
-   ```
+The root `.env.example` is for the backend. The frontend has a separate `frontend/.env.example` template.
 
-2. Create a PostgreSQL database named `ledgerguard`.
+### Backend variables
 
-3. Copy `.env.example` to `.env` and set `DATABASE_URL` and `JWT_SECRET`:
+| Variable | Purpose |
+|---|---|
+| `DATABASE_URL` | PostgreSQL connection string |
+| `JWT_SECRET` | Private token-signing secret |
+| `FRONTEND_URL` | Exact browser origin allowed by the API |
+| `GOOGLE_CLIENT_ID` | Google Web Client ID, if Google sign-in is enabled |
+| `ADMIN_USER_ID` | UUID of the intentionally selected bootstrap administrator |
+| `REDIS_URL` | Redis connection string when workers are enabled |
+| `RESEND_API_KEY`, `RESEND_FROM_EMAIL` | Resend email configuration |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` | SMTP configuration |
 
-   ```powershell
-   Copy-Item .env.example .env
-   ```
+Email delivery is optional for basic local startup but required for email verification and notification flows. Configure the provider used by your environment and verify delivery with real provider credentials. Automated tests mock the mail transport.
 
-4. Generate the Prisma client:
+### Frontend variables
 
-   ```powershell
-   npm run prisma:generate
-   ```
+Copy the frontend template when local overrides are needed:
 
-### Environment variable scopes
-
-The root `.env.example` is the backend template. Copy it to `.env` only for
-local development; never commit that copy. The `frontend/.env.example` file is
-the separate Vite template. Copy it to `frontend/.env.local` when the browser
-needs a non-default API origin or Google sign-in:
-
+**PowerShell**
 ```powershell
 Copy-Item frontend/.env.example frontend/.env.local
 ```
 
-Backend variables required for a normal deployment are:
+The public Vite settings include:
 
-- `DATABASE_URL`: private PostgreSQL connection string.
-- `JWT_SECRET`: private, long, randomly generated signing secret.
-- `FRONTEND_URL`: exact browser origin allowed by the API.
-- `GOOGLE_CLIENT_ID`: Google Web Client ID when Google sign-in is enabled.
-- `ADMIN_USER_ID`: UUID of the initial administrator when bootstrap admin
-  configuration is used.
+- `VITE_API_URL`
+- `VITE_GOOGLE_CLIENT_ID`
+- `VITE_ALLOWED_HOSTS`
 
-Email delivery is optional for basic local startup but required for production
-verification and failure notifications. Configure either the Resend variables
-(`RESEND_API_KEY`, `RESEND_FROM_EMAIL`) or the backend SMTP/OAuth variables
-(`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `EMAIL_USER`, `CLIENT_ID`,
-`CLIENT_SECRET`, and `REFRESH_TOKEN`) in the backend environment only.
-`REDIS_URL` is optional unless the background job worker is enabled.
-`EMAIL_OTP_*` and Mailpit variables control OTP expiry, resend limits, and
-local development delivery.
+Vite variables are embedded in browser assets. Never put database URLs, JWT secrets, OAuth client secrets, refresh tokens, SMTP credentials, API keys, or private keys in a `VITE_*` variable.
 
-Only intentionally public `VITE_*` values belong in `frontend/.env.local`:
-`VITE_API_URL`, `VITE_GOOGLE_CLIENT_ID`, and `VITE_ALLOWED_HOSTS`. Vite embeds
-these values into browser assets. Never place database URLs, JWT secrets,
-OAuth client secrets, refresh tokens, SMTP credentials, API keys, or private
-keys in a `VITE_*` variable.
+For deployment, configure backend secrets in the backend host's secret manager and public Vite values in the frontend provider's environment settings. Use the actual HTTPS frontend and API origins.
 
-For production, configure backend secrets in the hosting provider's secret
-manager and configure the public Vite variables in the frontend provider's
-environment settings. Do not copy local `.env` files to either provider. Use
-the actual HTTPS frontend and API origins; do not use localhost or temporary
-tunnel URLs in production.
+### Email OTP and local testing
 
-For verification email delivery through Resend, set `RESEND_API_KEY` and
-`RESEND_FROM_EMAIL` in `.env`. `FRONTEND_URL` must be the browser-facing
-frontend origin; local development uses `http://localhost:5173`. The
-verification link format is
-`http://localhost:5173/verify-email?token=<one-time-token>`. The token is
-validated by `GET /api/auth/verify-email` and is never returned in the API
-response. SMTP remains available as a local fallback when Resend is not
-configured.
+The post-login account setup flow uses a separate six-digit email OTP before currency-account creation. The code is associated with the authenticated user's registered email, expires after five minutes, and allows at most five incorrect attempts. Resends have a 60-second cooldown and are limited to five successfully delivered codes per user in a rolling 24-hour window.
 
-### Authenticated email OTP
+For local testing without sending real email, start Mailpit:
 
-After sign-in, the Accounts setup step requires a separate six-digit email OTP
-before currency-account creation. The OTP is sent only to the email address
-associated with the authenticated account; it expires after five minutes and
-allows at most five incorrect attempts. Resends have a 60-second cooldown and
-are limited to five successfully delivered codes per user in a rolling
-24-hour window. Configuration or email-delivery failures do not consume a send
-or start the cooldown.
-
-```text
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=587
-SMTP_USER=your-gmail-address
-SMTP_PASS=your-gmail-app-password
-EMAIL_OTP_EXPIRY_SECONDS=300
-EMAIL_OTP_RESEND_COOLDOWN_SECONDS=60
-```
-
-Create a Gmail App Password and configure these values in the backend `.env`
-or deployment secrets. They must never be placed in a `VITE_*` variable or
-committed. The backend stores an HMAC of each OTP, bound to the user ID and
-registered email; the plain code is returned only to the mail transport. Email
-delivery has not been confirmed with live SMTP credentials; automated tests
-mock the mail transport.
-
-The rolling send limiter records successful delivery timestamps in the existing OTP
-challenge. Deployments with existing history retain it until it expires naturally;
-older versions may have counted failed delivery attempts. Do not clear those
-counters to restore access. Before deploying a schema change, apply the additive migration with
-`npx prisma migrate deploy`; existing send counts are conservatively carried
-forward at their previous window start so applying it does not reset active
-limits.
-
-To test the authenticated OTP flow locally without sending real email, use the
-Mailpit profile:
-
-```powershell
+```bash
 docker compose --profile email-testing up -d mailpit
 ```
 
-The full local Compose stack binds its published ports to loopback and runs the
-API in development mode. Set a strong `JWT_SECRET` in the local `.env` before
-starting the API; the Compose database credential is for local development
-only and must never be reused in a deployed environment.
+Set `NODE_ENV=development` and `EMAIL_OTP_DELIVERY_MODE=mailpit` in the backend environment, then restart the API. Open [http://127.0.0.1:8025](http://127.0.0.1:8025) to inspect captured messages. Mailpit mode is development-only.
 
-In the backend's local `.env`, set `NODE_ENV=development` and
-`EMAIL_OTP_DELIVERY_MODE=mailpit`, then restart the backend. Open
-`http://127.0.0.1:8025` to read the locally captured verification messages.
-Mailpit's SMTP/UI ports are bound to loopback only. This mode sends to the
-local test server, requires no SMTP credentials, and is rejected unless the
-backend runs in development; leave `EMAIL_OTP_DELIVERY_MODE=smtp` in
-production. The OTP remains random and is not returned by the API or logged.
+Registration email-link verification and post-login account-setup OTP are separate flows. Apply and review the relevant Prisma migrations before using newly introduced OTP endpoints, including `prisma/migrations/20261027120000_email_otp_verification`.
 
-Existing registration email-link verification remains separate from this
-post-login account-setup OTP. Phone number is an optional profile contact and
-is not used for verification. The migration
-[`20261027120000_email_otp_verification`](./prisma/migrations/20261027120000_email_otp_verification/migration.sql)
-renames the already-applied phone-verification column and challenge table to
-legacy names (preserving their data) and creates the email OTP challenge
-table. Review and apply the migration to the target database before using the
-new email OTP endpoints; it has not been applied as part of this change.
+## Running the frontend
 
-### Public local testing with ngrok
-
-For phone or cross-device testing without deploying, run one ngrok tunnel for
-each local service:
-
-```powershell
-ngrok http 5173
-ngrok http 3000
+```bash
+cd frontend
+npm install
+npm run dev
 ```
 
-Copy the two HTTPS forwarding URLs into the environment files, without a
-trailing slash:
+The Vite development server typically runs on port `5173`. See [frontend/README.md](./frontend/README.md) for frontend-specific setup and deployment instructions.
 
-- Backend `.env`: set `FRONTEND_URL` to the frontend ngrok origin.
-- `frontend/.env.local`: set `VITE_API_URL` to the backend ngrok origin plus
-  `/api`, and set `VITE_ALLOWED_HOSTS` to the frontend ngrok hostname only.
+## API overview
 
-For example, if ngrok displays `https://frontend-example.ngrok-free.app` and
-`https://api-example.ngrok-free.app`, use:
+Main route groups include:
 
-```text
-FRONTEND_URL=https://frontend-example.ngrok-free.app
-VITE_API_URL=https://api-example.ngrok-free.app/api
-VITE_ALLOWED_HOSTS=frontend-example.ngrok-free.app
+| Area | Example routes |
+|---|---|
+| Health | `GET /health`, `GET /readyz`, `GET /metrics` |
+| Authentication | `POST /auth/register`, `POST /auth/login` |
+| User profile | `GET /users/me`, `PATCH /users/me` |
+| Accounts | `POST /accounts`, `GET /accounts/:id`, `GET /accounts/:id/balance` |
+| Transfers | `POST /transfers` |
+| Reversals | `POST /transfers/:transferId/reversal` |
+| Administration | `/admin/users`, `/admin/accounts`, `/admin/transfers`, `/admin/audit` |
+| Reconciliation | `POST /admin/reconciliation/runs`, `GET /admin/reconciliation/runs` |
+| Risk review | `GET /admin/transfers/flagged`, `POST /admin/transfers/:transferId/decision` |
+| Funding | `POST /admin/funding` |
+
+Compatibility prefixes such as `/api/auth` and `/api/accounts` are also available. See the route implementation and [OpenAPI specification](./docs/openapi.json) for request and response schemas.
+
+Transfers require `senderAccountId`, `receiverAccountId`, `amountMinor`, `currency`, and the `Idempotency-Key` header. Amounts and balances use integer minor units (for example, paise). Account states are `ACTIVE`, `FROZEN`, and `CLOSED`; account lookups are scoped to the authenticated user.
+
+## Background jobs
+
+Redis and BullMQ are optional. To run retryable reconciliation and risk jobs:
+
+1. Start Redis and configure `REDIS_URL`.
+2. Start the API.
+3. Run the worker in a separate process:
+
+```bash
+npm run jobs:worker
 ```
 
-These are examples of the required shape, not URLs to copy. The API returns
-CORS access only to the exact origin derived from `FRONTEND_URL`; requests
-carrying a different browser origin are rejected. CORS is not authentication
-or authorization—the API still validates bearer tokens and administrator
-identity on the server. Restart both the backend and Vite after changing
-environment variables. Keep the ngrok tunnels running while opening the
-verification email.
+The API enqueue endpoints return a job ID. The worker uses retry backoff and is isolated from the API process.
 
-5. Start the API:
+## Testing
 
-   ```powershell
-   npm run dev
-   ```
+Run the default test suite:
 
-The API starts on port `3000` by default. It connects to PostgreSQL before
-starting to accept requests.
-
-## Tests
-
-```powershell
+```bash
 npm test
 ```
 
-## Existing API routes
+Database-backed tests are opt-in and require a disposable test database:
 
-- `GET /health`
-- `GET /readyz` (database readiness)
-- `GET /metrics` (safe in-memory request metrics)
-- `POST /auth/register`
-- `POST /auth/login`
-- `GET /users/me`
-- `PATCH /users/me` (authenticated banking-profile update)
-- `POST /accounts`
-- `GET /accounts/:id`
-- `GET /accounts/:id/balance`
-- `POST /transfers`
-- `POST /admin/funding` (administrator only)
-- `POST /transfers/:transferId/reversal` (authenticated transfer owner)
-- `GET /admin/transfers/flagged` (administrator only)
-- `POST /admin/transfers/:transferId/decision` (administrator only)
-- `POST /admin/jobs/reconciliation` (administrator only)
-- `POST /admin/jobs/risk/:transferId` (administrator only)
-
-The `/api/auth` and `/api/accounts` prefixes remain available for compatibility
-with the earlier API. Account lookups always constrain the query by both the
-requested account ID and the authenticated user's ID, so changing an account
-ID cannot expose another user's account.
-
-Account states are `ACTIVE`, `FROZEN`, and `CLOSED`. Account balances are
-returned as integer minor units in `balanceMinor`.
-
-The authenticated `/users/me` endpoint returns the user's banking profile, and
-`PATCH /users/me` updates only the identity from the verified session. Profile
-columns are nullable for existing accounts. Apply the
-`20261026114500_banking_profile` Prisma migration before using the profile
-fields; no existing user data is overwritten.
-
-Transfers require `senderAccountId`, `receiverAccountId`, `amountMinor`,
-`currency`, and the `Idempotency-Key` header. The transfer operation locks both accounts,
-checks the sender's ledger-derived balance, and writes the transfer and its
-debit/credit entries in one serializable PostgreSQL transaction.
-
-Every completed customer transfer must have exactly one debit and one credit
-for the same minor-unit amount. Administrative funding is represented as one
-credit with no sender account. A deferred PostgreSQL constraint trigger rejects
-any other posted-ledger shape. Ledger entries are immutable; corrections must
-be represented by a new compensating transfer and entries.
-
-## Phase 7 reconciliation
-
-Run an administrator-only reconciliation with `POST /admin/reconciliation/runs`.
-The engine compares ledger-derived account balances with completed transfer
-projections and checks every transfer for missing, mismatched, duplicate, or
-status-inconsistent postings. Each run is stored in `reconciliation_runs`;
-reconciliation only reports discrepancies and never changes financial records.
-Use `GET /admin/reconciliation/runs` to review the latest reports.
-
-## Phase 8 risk engine
-
-Transfer creation runs explainable risk rules before ledger posting. The
-assessment records a score, `LOW`, `MEDIUM`, or `HIGH` level, a decision, and
-human-readable reasons. Low and medium risk transfers are approved and posted;
-high-risk transfers are stored with `REVIEW` status and no ledger entries, so
-they enter a visible hold flow instead of disappearing. Risk assessment is
-separate from the accounting posting logic.
-
-The key is scoped to the authenticated user and bound to a SHA-256 hash of the
-request identity. Retrying a matching request returns the original transfer;
-reusing the key with a different payload is rejected. The database uniqueness
-constraint also makes concurrent retries safe, including when a client times
-out after the server commits.
-
-To authorize an administrator, an operator must set the server-side
-`ADMIN_USER_ID` environment variable to the UUID of an existing user who
-has been intentionally selected for administration, then restart the server.
-That configured bootstrap administrator cannot be demoted through the portal.
-After applying database migrations, an active administrator can manage
-additional active users with verified email addresses from `/admin/roles`.
-Secondary roles are stored in `users.is_admin`, checked against the database on
-each request, and changes are recorded in `admin_audit_logs`. Public profile
-updates cannot set this field. The API rejects self-demotion, removal of the
-last active administrator, and conflicting concurrent role changes.
-The admin portal is available at `/admin`; its database-backed overview is
-served by `GET /admin/overview`. Public registration and profile endpoints do
-not accept or promote administrator roles, and changing frontend state or
-request data cannot grant admin access.
-
-For local funding tests, an already authorized administrator can call
-`POST /admin/funding` with `accountId`, `amountMinor`, `currency`, and a
-required `reason`. Funding is recorded as a completed transfer with an
-auditable credit ledger entry and admin audit event; it is not a direct balance
-mutation.
-
-Admin operations also provide paginated `/admin/users`, `/admin/accounts`,
-`/admin/transfers`, and `/admin/audit` views. User suspension/reactivation and
-account freeze/unfreeze require a reason and create an audit event in the same
-database transaction as the state change. Account transitions are limited to
-`ACTIVE` ↔ `FROZEN`; closed accounts and users cannot be reopened through
-these endpoints. Transfer monitoring supports status, date range, account,
-risk level, and risk-decision filters. These controls do not edit balances or
-ledger entries. The general audit log is stored in append-only
-`admin_audit_logs`.
-
-If a transfer submission times out, the client can check its status using
-`GET /transaction/status` with the same authenticated `Idempotency-Key`. The
-lookup does not create or resubmit a transfer; retrying the original request,
-if needed, must reuse that same key.
-
-## Phase 9 optional ML model
-
-The isolated `ml/` component generates deterministic synthetic transactions,
-trains logistic regression, and compares it with the rule-based baseline on a
-held-out split using precision, recall, and false-positive rate. It does not
-participate in accounting or transfer posting unless a future, measured
-integration is explicitly approved.
-
-See [ml/README.md](./ml/README.md) for setup and the optional FastAPI service.
-
-OpenAPI documentation is in [docs/openapi.json](./docs/openapi.json).
-
-## Phase 10 recovery and background jobs
-
-Completed customer transfers can be reversed with a compensating completed
-transfer. The original transfer is marked `REVERSED`; neither transfer nor
-either set of ledger entries is deleted or edited. Reversal requests require a
-scoped `Idempotency-Key`, and the database prevents a second reversal.
-
-High-risk transfers are listed through the administrator API. Approving one
-posts its balanced ledger entries; declining one records a `FAILED` outcome.
-Every decision stores the administrator user and timestamp in
-`admin_decisions`.
-
-Retryable reconciliation and risk jobs use Redis and BullMQ. Set `REDIS_URL`,
-start Redis, then run `npm run jobs:worker`. The API enqueue endpoints return a
-job ID and use exponential retry backoff. The worker is separate from the API
-so a job failure cannot silently change accounting records.
-
-## Phase 11 testing, CI, and deployment
-
-### Production deployment
-
-The recommended split deployment is:
-
-- **Frontend:** Vercel static hosting from the `frontend/` directory.
-- **Backend:** Render Node web service using the checked-in
-  [render.yaml](./render.yaml), or an equivalent managed Node host.
-- **Database:** Managed PostgreSQL configured through `DATABASE_URL`.
-
-The frontend uses `VITE_API_URL` for the deployed API base URL. The backend
-uses `FRONTEND_URL` for an exact HTTPS CORS allowlist entry. See
-[frontend/README.md](./frontend/README.md#production-deployment) for the
-complete environment-variable and verification checklist.
-
-The frontend bundle may contain only public `VITE_*` configuration, such as a
-Google Web Client ID. Never expose `DATABASE_URL`, `JWT_SECRET`, OAuth client
-secrets, refresh tokens, SMTP credentials, or provider API keys through Vite
-variables.
-
-Run the default tests:
-
-```powershell
-npm test
-```
-
-Database-backed tests are intentionally disabled unless both safeguards are
-present:
-
+**PowerShell**
 ```powershell
 $env:DATABASE_URL = "postgresql://ledgerguard:ledgerguard@localhost:5432/ledgerguard_test?schema=public"
 $env:RUN_DB_TESTS = "1"
@@ -400,78 +240,42 @@ npx prisma migrate deploy
 npm test
 ```
 
-The test database must be a disposable database named `ledgerguard_test`.
 Never set `RUN_DB_TESTS=1` against a production or customer database.
 
-For local infrastructure:
+CI is configured in [`.github/workflows/ci.yml`](./.github/workflows/ci.yml). It uses an isolated PostgreSQL service, validates and generates Prisma Client, applies migrations, and runs tests. CI does not deploy.
 
-```powershell
+For local container-based infrastructure:
+
+```bash
 docker compose up --build
-curl http://localhost:3000/health
-curl http://localhost:3000/readyz
 ```
 
-The API container applies pending migrations before starting. In managed
-deployment, run `npx prisma migrate deploy` as a release step, then start
-`node server.js`. Roll back application code only after confirming that the
-database migration is backward-compatible; do not roll back applied Prisma
-migrations by deleting rows from `_prisma_migrations`.
+## Deployment
 
-CI is defined in [.github/workflows/ci.yml](./.github/workflows/ci.yml). It
-starts an isolated PostgreSQL service, validates and generates Prisma Client,
-deploys migrations, and fails on any test failure. It does not deploy.
+The recommended split deployment is:
 
-To measure repeatable HTTP performance against a running local server:
+- **Frontend:** Vercel, using the `frontend/` directory.
+- **Backend:** Render Node service using [`render.yaml`](./render.yaml), or an equivalent managed Node host.
+- **Database:** managed PostgreSQL.
 
-```powershell
-$env:LOAD_URL = "http://127.0.0.1:3000/health"
-$env:LOAD_CONCURRENCY = "10"
-$env:LOAD_DURATION_SECONDS = "30"
-npm run load:test
-```
+Configure backend secrets (including `DATABASE_URL`, `JWT_SECRET`, email-provider credentials, and `ADMIN_USER_ID`) in the backend host's secret manager. Set `FRONTEND_URL` to the exact deployed frontend origin and configure public `VITE_*` values in the frontend deployment environment.
 
-The command reports measured request count, failures, throughput, and p50/p95/p99
-latencies. It does not represent transfer throughput until pointed at a
-properly seeded test fixture with valid authentication and idempotency keys.
-No benchmark result is claimed until the command is run and its output recorded.
+Run `npx prisma migrate deploy` as a release step before starting the new backend version. See [frontend deployment notes](./frontend/README.md#production-deployment).
 
-## Phase 12 frontend
+## Security and operational notes
 
-The React/Vite/TypeScript design-system foundation lives in `frontend/`.
-It uses Tailwind CSS, Framer Motion, and Lucide icons. Start it with:
+- The configured `ADMIN_USER_ID` must identify an existing user deliberately selected for administration. Additional admin roles are database-backed and audited.
+- Public registration and profile updates cannot grant administrator access.
+- The forgot-password flow currently returns different messages for registered and unregistered email addresses. This can enable account enumeration; consider a generic response for production.
+- Frontend JWT state is held in memory rather than `localStorage`. The current backend does not issue refresh tokens, so a full browser refresh requires signing in again.
+- Email delivery depends on correctly configured provider credentials and sender verification. Test delivery in the target environment.
+- The optional ML experiment is isolated from transfer posting and does not make live production risk decisions.
+- Do not use real customer data or real funds in this portfolio project.
 
-```powershell
-cd frontend
-npm install
-npm run dev
-```
+## Documentation
 
-The initial dashboard is a visual foundation only; API authentication and
-financial data wiring should be added in the next frontend phase.
+- [Frontend guide](./frontend/README.md)
+- [OpenAPI specification](./docs/openapi.json)
+- [ML component guide](./ml/README.md)
+- [Render configuration](./render.yaml)
 
-### Phase 13 authentication
-
-The frontend now includes real login and registration screens connected to the
-existing `/api/auth` routes. It validates fields with React Hook Form and Zod,
-handles backend/network errors, supports password visibility, and protects the
-dashboard behind in-memory authentication state. JWTs are sent as bearer
-headers through Axios and are not persisted in localStorage. Since the current
-backend does not issue refresh tokens, a full browser refresh requires signing
-in again. See [frontend/README.md](./frontend/README.md) for verification
-steps.
-
-Google authentication uses Google Identity Services in the browser and
-server-side ID-token verification with `GOOGLE_CLIENT_ID`. The Google subject
-is stored in the additive `users.google_subject` field. Existing
-email/password users are not automatically linked; the Google endpoint returns
-a conflict instructing the user to use the password account. Configure the
-same Web Client ID in the backend `.env` and `frontend/.env.local`.
-
-The forgot-password endpoint intentionally returns different messages for
-existing and nonexistent email addresses because the product flow requires
-account-specific frontend feedback. This enables account enumeration, so
-production deployments should switch to a generic response if that threat
-outweighs the UX requirement. Reset tokens remain hashed, single-use, and
-valid for 15 minutes.
-- `POST /api/transaction/transaction`
-- `POST /api/transaction/initial-funding`

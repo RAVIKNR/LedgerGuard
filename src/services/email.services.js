@@ -2,7 +2,7 @@ const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '../../.env') });
 const nodemailer = require('nodemailer');
 const crypto = require("crypto");
-const { renderLedgerGuardEmail, renderTransactionEmail, renderFailedTransactionEmail, renderSecurityNotificationEmail, renderAccountEventEmail } = require('./ledgerguard-email.template');
+const { renderLedgerGuardEmail, renderTransactionEmail, renderFailedTransactionEmail, renderSecurityNotificationEmail, renderHighAmountSecurityEmail, renderFrequencySecurityEmail, renderAccountEventEmail } = require('./ledgerguard-email.template');
 const { getFrontendUrl } = require('../config/frontend-url');
 
 const smtpHost = process.env.EMAIL_HOST || 'smtp.gmail.com';
@@ -71,50 +71,116 @@ if (process.env.NODE_ENV !== 'test' && process.env.EMAIL_USER) {
   });
 }
 
+
 const sendEmail = async (to, subject, text, html, diagnostics = {}) => {
   const { event, requestId = 'untracked' } = diagnostics;
-  const diagnosticFields = event
-    ? { event, requestId, stage: 'transporter.sendMail' }
-    : null;
-  if (diagnosticFields) {
-    console.log(JSON.stringify({
-      ...diagnosticFields,
-      event: `${event}_sendMail_started`,
-      smtpHost,
-      smtpPort,
-      smtpSecure,
-      requireTLS: smtpRequireTls
-    }));
-  }
-  try {
-    const result = await transporter.sendMail({
-    from: `"LedgerGuard" <${process.env.EMAIL_USER}>`,
-    to,
-    subject,
-    text,
-    html,
-    });
+  const deliveryMode = (
+    process.env.NODE_ENV === 'test'
+      ? process.env.EMAIL_OTP_DELIVERY_MODE || 'smtp'
+      : 'mailjet'
+  ).toLowerCase();
+
+  if (deliveryMode === 'mailjet') {
+    const apiKey = process.env.MAILJET_API_KEY;
+    const secretKey = process.env.MAILJET_SECRET_KEY;
+    const fromEmail = process.env.MAILJET_FROM_EMAIL;
+
+    if (!apiKey || !secretKey || !fromEmail) {
+      throw new Error('Mailjet email configuration is incomplete');
+    }
+
+    const diagnosticFields = event
+      ? { event, requestId, provider: 'mailjet' }
+      : null;
+
     if (diagnosticFields) {
       console.log(JSON.stringify({
         ...diagnosticFields,
-        event: `${event}_sendMail_completed`,
-        acceptedCount: Array.isArray(result.accepted) ? result.accepted.length : 0,
-        rejectedCount: Array.isArray(result.rejected) ? result.rejected.length : 0,
-        responseCode: result.responseCode || null
+        stage: 'delivery_started'
       }));
     }
-    return result;
-  } catch (error) {
-    if (diagnosticFields) {
-      console.error(JSON.stringify({
-        ...diagnosticFields,
-        event: `${event}_sendMail_failed`,
-        ...smtpErrorDetails(error)
-      }));
+
+    try {
+      const response = await fetch('https://api.mailjet.com/v3.1/send', {
+        method: 'POST',
+        headers: {
+          Authorization: `Basic ${Buffer.from(
+            `${apiKey}:${secretKey}`
+          ).toString('base64')}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          Messages: [
+            {
+              From: {
+                Email: fromEmail,
+                Name: 'LedgerGuard'
+              },
+              To: (Array.isArray(to) ? to : [to]).map(email => ({
+                Email: email
+              })),
+              Subject: subject,
+              TextPart: text,
+              HTMLPart: html
+            }
+          ]
+        })
+      });
+
+      const result = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        console.error('[email] Mailjet delivery failed', {
+          event: event || null,
+          status: response.status,
+          error: result?.Messages?.[0]?.Errors || null
+        });
+
+        throw new Error('Mailjet rejected the email');
+      }
+
+      if (result?.Messages?.[0]?.Status !== 'success') {
+        console.error('[email] Mailjet did not accept the email', {
+          event: event || null
+        });
+
+        throw new Error('Mailjet did not accept the email');
+      }
+
+      if (diagnosticFields) {
+        console.log(JSON.stringify({
+          ...diagnosticFields,
+          stage: 'delivery_completed'
+        }));
+      }
+
+      return result;
+    } catch (error) {
+      if (diagnosticFields) {
+        console.error(JSON.stringify({
+          ...diagnosticFields,
+          stage: 'delivery_failed',
+          message: error.message
+        }));
+      }
+
+      throw error;
     }
-    throw error;
   }
+
+  if (deliveryMode === 'smtp') {
+    return transporter.sendMail({
+      from: `"LedgerGuard" <${process.env.EMAIL_USER}>`,
+      to,
+      subject,
+      text,
+      html
+    });
+  }
+
+  throw new Error(`Unsupported email delivery mode: ${deliveryMode}`);
 };
+
 
 async function sendTransactionEmail({ email, name, type, amountMinor, currency, reference, occurredAt }) {
   const amount = new Intl.NumberFormat('en-IN', {
@@ -139,6 +205,16 @@ async function sendFailedTransactionEmail({ email, name, amountMinor, currency, 
 }
 
 async function sendSecurityNotificationEmail(notification) {
+  if (notification.eventType === 'FREQUENCY_ALERT') {
+    const message = renderFrequencySecurityEmail({
+      recipientName: notification.recipientName,
+      accountIdentifier: notification.accountId ? `acct-****-${notification.accountId.slice(-4)}` : null,
+      occurredAt: notification.occurredAt,
+      actionUrl: `${getFrontendUrl()}/history`
+    });
+    await sendEmail(notification.recipientEmail, 'Unusually high transaction activity | LedgerGuard', message.text, message.html, { event: 'frequency_alert' });
+    return;
+  }
   const message = renderSecurityNotificationEmail({
     recipientName: notification.recipientName,
     eventType: notification.eventType,
@@ -149,6 +225,44 @@ async function sendSecurityNotificationEmail(notification) {
     occurredAt: notification.occurredAt
   });
   await sendEmail(notification.recipientEmail, `${message.subject} | LedgerGuard`, message.text, message.html);
+}
+
+async function sendTransferReviewEmail({ email, name, amountMinor, currency, reference, risk, recipientAccount, reviewDeadlineAt, occurredAt }) {
+  const amount = new Intl.NumberFormat('en-IN', {
+    style: 'currency',
+    currency: currency.trim()
+  }).format(Number(amountMinor) / 100);
+  const reasons = Array.isArray(risk?.reasons) ? risk.reasons.join('; ') : 'Configured risk signals were detected';
+  const expiry = new Date(reviewDeadlineAt).toISOString();
+  const supportContact = process.env.SUPPORT_EMAIL || process.env.MAILJET_FROM_EMAIL;
+  const message = renderHighAmountSecurityEmail({
+    recipientName: name,
+    amount,
+    currency: currency.trim(),
+    recipientAccount: `acct-****-${String(recipientAccount?.accountNumber || '').slice(-4)}`,
+    occurredAt: occurredAt || new Date(),
+    reference,
+    reasons: `${reasons} (risk score ${risk?.score ?? 'Unavailable'}, ${risk?.level || 'HIGH'})`,
+    reviewDeadlineAt,
+    supportContact
+  });
+  await sendEmail(email, 'Transaction requires your attention | LedgerGuard', message.text, message.html, { event: 'transfer_review' });
+}
+
+async function sendTransferDecisionEmail({ email, name, amountMinor, currency, reference, decision, occurredAt }) {
+  const amount = new Intl.NumberFormat('en-IN', {
+    style: 'currency',
+    currency: currency.trim()
+  }).format(Number(amountMinor) / 100);
+  const status = decision === 'APPROVED' ? 'APPROVED' : 'REJECTED';
+  const message = renderLedgerGuardEmail({
+    recipientName: name,
+    title: `Transfer ${status.toLowerCase()}`,
+    intro: `Your ${amount} ${currency.trim()} transfer has been ${status}.`,
+    message: `Transfer reference: ${reference || 'Unavailable'}\nStatus: ${status}\nDecision time: ${new Date(occurredAt).toISOString()} UTC`,
+    expiry: 'not applicable'
+  });
+  await sendEmail(email, `Transfer ${status.toLowerCase()} | LedgerGuard`, message.text, message.html, { event: 'transfer_decision' });
 }
 
 async function sendPasswordResetEmail({ email, name, token, requestId = 'untracked', expiresAt, occurredAt = new Date() }) {
@@ -896,59 +1010,142 @@ async function initiatefunding(
 
 
 
+
 async function sendVerificationEmail(email, name, token) {
- const verificationUrl = new URL('/verify-email', getFrontendUrl());
- verificationUrl.searchParams.set('token', token);
- const subject = 'Verify your LedgerGuard email';
- const message = renderLedgerGuardEmail({
-   recipientName: name,
-   title: 'Verify your LedgerGuard email',
-   intro: 'Confirm your email address to activate sign-in.',
-   message: 'This one-time verification link is unique to your account.',
-   actionLabel: 'Verify email address',
-   actionUrl: verificationUrl.toString(),
-   expiry: '24 hours'
- });
+  const verificationUrl = new URL('/verify-email', getFrontendUrl());
+  verificationUrl.searchParams.set('token', token);
 
- if (process.env.RESEND_API_KEY) {
-   const response = await fetch('https://api.resend.com/emails', {
-     method: 'POST',
-     headers: {
-       Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
-       'Content-Type': 'application/json'
-     },
-     body: JSON.stringify({
-       from: process.env.RESEND_FROM_EMAIL || 'LedgerGuard <onboarding@resend.dev>',
-       to: [email],
-       subject,
-       text: message.text,
-       html: message.html
-     })
-   });
-   if (!response.ok) {
-     console.error('[email] Resend verification email failed', { status: response.status });
-     throw new Error('Resend rejected the verification email');
-   }
-   return;
- }
+  const subject = 'Verify your LedgerGuard email';
 
- if (!process.env.EMAIL_USER || !process.env.CLIENT_ID || !process.env.CLIENT_SECRET || !process.env.REFRESH_TOKEN) {
-   throw new Error('Email service is not configured');
- }
+  const message = renderLedgerGuardEmail({
+    recipientName: name,
+    title: 'Verify your LedgerGuard email',
+    intro: 'Confirm your email address to activate sign-in.',
+    message: 'This one-time verification link is unique to your account.',
+    actionLabel: 'Verify email address',
+    actionUrl: verificationUrl.toString(),
+    expiry: '24 hours'
+  });
 
- try {
-   await transporter.sendMail({
-     from: `"LedgerGuard" <${process.env.EMAIL_USER}>`,
-     to: email,
-     subject,
-    text: message.text,
-    html: message.html
-   });
- } catch (error) {
-   console.error('[email] Verification email send failed', smtpErrorDetails(error));
-   throw error;
- }
+  const deliveryMode = process.env.NODE_ENV === 'test' ? 'smtp' : 'mailjet';
+
+  // Mailjet provider
+  if (deliveryMode === 'mailjet') {
+    const apiKey = process.env.MAILJET_API_KEY;
+    const secretKey = process.env.MAILJET_SECRET_KEY;
+    const fromEmail = process.env.MAILJET_FROM_EMAIL;
+
+    if (!apiKey || !secretKey || !fromEmail) {
+      throw new Error('Mailjet email configuration is incomplete');
+    }
+
+    const credentials = Buffer.from(
+      `${apiKey}:${secretKey}`
+    ).toString('base64');
+
+    const response = await fetch('https://api.mailjet.com/v3.1/send', {
+      method: 'POST',
+      headers: {
+        Authorization: `Basic ${credentials}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        Messages: [{
+          From: {
+            Email: fromEmail,
+            Name: 'LedgerGuard'
+          },
+          To: [{ Email: email }],
+          Subject: subject,
+          TextPart: message.text,
+          HTMLPart: message.html
+        }]
+      })
+    });
+
+    const responseText = await response.text();
+
+    if (!response.ok) {
+      console.error('[email] Mailjet verification email failed', {
+        status: response.status
+      });
+      throw new Error('Mailjet rejected the verification email');
+    }
+
+    let result;
+
+    try {
+      result = JSON.parse(responseText);
+    } catch {
+      throw new Error('Invalid Mailjet response');
+    }
+
+    if (result?.Messages?.[0]?.Status !== 'success') {
+      console.error('[email] Mailjet did not accept verification email');
+      throw new Error('Mailjet did not accept the verification email');
+    }
+
+    console.log('[email] Verification email delivered through Mailjet');
+    return;
+  }
+
+  // Resend provider
+  if (deliveryMode === 'resend' && process.env.RESEND_API_KEY) {
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        from: process.env.RESEND_FROM_EMAIL || 'LedgerGuard <onboarding@resend.dev>',
+        to: [email],
+        subject,
+        text: message.text,
+        html: message.html
+      })
+    });
+
+    if (!response.ok) {
+      console.error('[email] Resend verification email failed', {
+        status: response.status
+      });
+      throw new Error('Resend rejected the verification email');
+    }
+
+    console.log('[email] Verification email delivered through Resend');
+    return;
+  }
+
+  // Existing SMTP fallback
+  if (
+    !process.env.EMAIL_USER ||
+    !process.env.CLIENT_ID ||
+    !process.env.CLIENT_SECRET ||
+    !process.env.REFRESH_TOKEN
+  ) {
+    throw new Error('Email service is not configured');
+  }
+
+  try {
+    await transporter.sendMail({
+      from: `"LedgerGuard" <${process.env.EMAIL_USER}>`,
+      to: email,
+      subject,
+      text: message.text,
+      html: message.html
+    });
+
+    console.log('[email] Verification email delivered through SMTP');
+  } catch (error) {
+    console.error(
+      '[email] Verification email send failed',
+      smtpErrorDetails(error)
+    );
+    throw error;
+  }
 }
+
 
 module.exports = {
   RegistrationEmail: (email, name) => sendRegistrationConfirmationEmail({ email, name }),
@@ -961,6 +1158,8 @@ module.exports = {
   sendTransactionEmail,
   sendFailedTransactionEmail,
   sendSecurityNotificationEmail,
+  sendTransferReviewEmail,
+  sendTransferDecisionEmail,
   sendRegistrationConfirmationEmail,
   sendLoginConfirmationEmail,
   sendAccountCreatedEmail,

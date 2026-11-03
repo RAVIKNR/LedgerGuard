@@ -1,4 +1,4 @@
-const { renderLedgerGuardEmail, renderSecurityNotificationEmail, renderAccountEventEmail } = require('../src/services/ledgerguard-email.template');
+const { renderLedgerGuardEmail, renderSecurityNotificationEmail, renderHighAmountSecurityEmail, renderFrequencySecurityEmail, renderAccountEventEmail } = require('../src/services/ledgerguard-email.template');
 
 jest.mock('nodemailer', () => ({
     createTransport: jest.fn(() => ({ sendMail: jest.fn().mockResolvedValue({}) }))
@@ -113,5 +113,39 @@ describe('LedgerGuard transactional email template', () => {
         expect(message.html).toContain('&lt;Ravi&gt;');
         expect(message.text).toContain('Continue to LedgerGuard: https://ledgerguard.example.test/');
         expect(message.text).toContain('Event time:');
+    });
+
+    it('renders the high-amount alert as a structured security review email', () => {
+        const message = renderHighAmountSecurityEmail({
+            recipientName: 'Ravi',
+            amount: '₹75,000.00',
+            currency: 'INR',
+            recipientAccount: 'acct-****-1234',
+            occurredAt: new Date('2026-10-27T10:00:00.000Z'),
+            reference: 'transfer-123',
+            reasons: 'Unusually large amount',
+            reviewDeadlineAt: new Date('2026-10-28T10:00:00.000Z'),
+            supportContact: 'admin@example.test'
+        });
+
+        expect(message.html).toContain('₹75,000.00');
+        expect(message.html).toContain('Transaction details');
+        expect(message.html).toContain('What should you do now?');
+        expect(message.html).toContain('acct-****-1234');
+        expect(message.text).toContain('automatic approval after 24 hours');
+    });
+
+    it('renders the frequency alert with a ten-step activity indicator', () => {
+        const message = renderFrequencySecurityEmail({
+            recipientName: 'Ravi',
+            accountIdentifier: 'acct-****-1234',
+            occurredAt: new Date('2026-10-27T10:00:00.000Z')
+        });
+
+        expect(message.html).toContain('10 successful');
+        expect(message.html).toContain('Rolling 24-hour monitor');
+        expect((message.html.match(/height:10px/g) || []).length).toBe(10);
+        expect(message.html).toContain('This alert does not block your account.');
+        expect(message.text).toContain('Review your recent outgoing transactions.');
     });
 });

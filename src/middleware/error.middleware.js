@@ -9,24 +9,36 @@ function notFound(req, res) {
 function errorHandler(error, req, res, next) {
     const statusCode = error.statusCode || 500;
 
+    const safeCode = typeof error.code === 'string' && /^[A-Z0-9_]{1,40}$/.test(error.code)
+        ? error.code
+        : null;
     console.error('Request failed', {
         method: req.method,
         path: req.path,
         statusCode,
         requestId: req.requestId,
-        errorName: error.name,
-        prismaCode: error.code || null
+        errorName: typeof error.name === 'string' ? error.name : 'Error',
+        prismaCode: safeCode
     });
 
-
+    // Keep internal error details hidden from API clients
     const responseError = statusCode === 500
-        ? { message: 'Internal server error' }
+        ? {
+            message: 'Internal server error'
+        }
         : {
             ...(error.code ? { code: error.code } : {}),
             message: error.message,
             ...(error.details ? { details: error.details } : {})
         };
-    res.status(statusCode).json({ error: responseError });
+
+    if (res.headersSent) {
+        return next(error);
+    }
+
+    return res.status(statusCode).json({
+        error: responseError
+    });
 }
 
 module.exports = { notFound, errorHandler };

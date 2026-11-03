@@ -13,8 +13,10 @@ model TransactionNotification {
   currency         String    @db.Char(3)
   reference        String?   @db.VarChar(255)
   occurredAt       DateTime  @map("occurred_at")
+  reviewDeadlineAt DateTime? @map("review_deadline_at")
   status           String    @default("PENDING") @db.VarChar(16)
   attempts         Int       @default(0)
+  nextAttemptAt    DateTime? @map("next_attempt_at")
   lastError        String?   @map("last_error") @db.VarChar(255)
   sentAt           DateTime? @map("sent_at")
   createdAt        DateTime  @default(now()) @map("created_at")
@@ -24,6 +26,7 @@ model TransactionNotification {
 
   @@unique([transferId, notificationType])
   @@index([status, createdAt])
+  @@index([status, nextAttemptAt])
   @@map("transaction_notifications")
 }
 
@@ -222,6 +225,7 @@ model Account {
   userId            String           @map("user_id") @db.Uuid
   currency          String           @db.Char(3)
   status            AccountStatus    @default(ACTIVE)
+  outgoingRestrictionUntil DateTime? @map("outgoing_restriction_until")
   createdAt         DateTime         @default(now()) @map("created_at")
   updatedAt         DateTime         @updatedAt @map("updated_at")
   user              User             @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Cascade)
@@ -233,6 +237,7 @@ model Account {
 
   @@unique([userId, currency])
   @@index([userId])
+  @@index([outgoingRestrictionUntil])
   @@map("accounts")
 }
 
@@ -245,6 +250,7 @@ model Transfer {
   status            TransferStatus            @default(PENDING)
   reference         String?                   @db.VarChar(255)
   failureReason     String?                   @map("failure_reason") @db.VarChar(255)
+  reviewDeadlineAt  DateTime?                 @map("review_deadline_at")
   availableBalanceMinor BigInt?               @map("available_balance_minor") @db.BigInt
   createdAt         DateTime                  @default(now()) @map("created_at")
   updatedAt         DateTime                  @updatedAt @map("updated_at")
@@ -261,6 +267,7 @@ model Transfer {
   @@index([senderAccountId])
   @@index([receiverAccountId])
   @@index([status, createdAt])
+  @@index([status, reviewDeadlineAt])
   @@map("transfers")
 }
 

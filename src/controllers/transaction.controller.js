@@ -2,7 +2,17 @@ const crypto = require('crypto');
 const { Prisma } = require('@prisma/client');
 const { prisma } = require('../config/db');
 const { assessTransfer } = require('../services/risk.service');
-const { dispatchTransactionNotifications, queueTransferNotifications, queueTransferFailureNotification } = require('../services/transaction-notification.service');
+const {
+    dispatchTransactionNotifications,
+    queueTransferNotifications,
+    queueTransferFailureNotification,
+    queueTransferReviewNotification
+} = require('../services/transaction-notification.service');
+const { dispatchSecurityNotification } = require('../services/security-notification.service');
+const { queueFrequencyAlertIfNeeded } = require('../services/transaction-frequency.service');
+const { getReviewDurationHours } = require('../config/review-policy');
+
+const REVIEW_DURATION_HOURS = getReviewDurationHours();
 
 function transferResponse(transfer) {
     const response = {
@@ -175,46 +185,70 @@ async function transactionController(req, res) {
                 throw error;
             }
 
-            const rejectTransfer = async (reason, code = 'TRANSFER_REJECTED', availableBalanceMinor = null) => {
-                const failedTransfer = await tx.transfer.create({
-                    data: {
-                        senderAccountId: sender.id,
-                        receiverAccountId: receiver.id,
-                        amountMinor,
-                        currency: input.currency,
-                        status: 'FAILED',
-                        failureReason: reason,
-                        availableBalanceMinor
-                    },
-                    include: { senderAccount: { include: { user: true } }, receiverAccount: true }
-                });
-                await tx.idempotencyKey.create({
-                    data: {
-                        userId: req.user.id,
-                        accountId: sender.id,
-                        transferId: failedTransfer.id,
-                        key: idempotencyKey,
-                        requestHash,
-                        responseStatus: 409,
-                        responseBody: transferResponse(failedTransfer)
-                    }
-                });
-                await queueTransferFailureNotification(tx, failedTransfer);
-                return {
-                    transfer: failedTransfer,
-                    replayed: false,
-                    statusCode: 409,
-                    failure: {
-                        code,
-                        message: reason,
-                        details: {
-                            ...(availableBalanceMinor === null ? {} : { availableBalanceMinor: availableBalanceMinor.toString() }),
-                            requiredAmountMinor: amountMinor.toString(),
-                            currency: input.currency
-                        }
-                    }
-                };
-            };
+           
+const rejectTransfer = async (reason, code = 'TRANSFER_REJECTED', availableBalanceMinor = null) => {
+    const failedTransfer = await tx.transfer.create({
+        data: {
+            senderAccountId: sender.id,
+            receiverAccountId: receiver.id,
+            amountMinor,
+            currency: input.currency,
+            status: 'FAILED',
+            failureReason: reason,
+            availableBalanceMinor
+        },
+        include: { senderAccount: { include: { user: true } }, receiverAccount: true }
+    });
+
+    await tx.idempotencyKey.create({
+        data: {
+            userId: req.user.id,
+            accountId: sender.id,
+            transferId: failedTransfer.id,
+            key: idempotencyKey,
+            requestHash,
+            responseStatus: 409,
+            responseBody: transferResponse(failedTransfer)
+        }
+    });
+
+    await queueTransferFailureNotification(tx, failedTransfer);
+
+    return {
+        transfer: failedTransfer,
+        replayed: false,
+        statusCode: 409,
+        failure: {
+            code,
+            message: reason,
+            details: {
+                ...(availableBalanceMinor === null ? {} : {
+                    availableBalanceMinor: availableBalanceMinor.toString()
+                }),
+                requiredAmountMinor: amountMinor.toString(),
+                currency: input.currency
+            }
+        }
+    };
+};
+
+// Keep the current time in the main transaction scope.
+const now = new Date();
+
+if (sender.outgoingRestrictionUntil && sender.outgoingRestrictionUntil > now) {
+    return rejectTransfer(
+        `Outgoing transfers are temporarily restricted until ${sender.outgoingRestrictionUntil.toISOString()}`,
+        'OUTGOING_TRANSFER_RESTRICTED'
+    );
+}
+
+if (sender.outgoingRestrictionUntil) {
+    await tx.account.update({
+        where: { id: sender.id },
+        data: { outgoingRestrictionUntil: null }
+    });
+}
+
 
             const senderUser = await tx.user.findUnique({
                 where: { id: sender.userId },
@@ -260,6 +294,25 @@ async function transactionController(req, res) {
                 return rejectTransfer('Insufficient Funds', 'INSUFFICIENT_FUNDS', balanceMinor);
             }
 
+            const successfulOutgoingCount = await tx.transfer.count({
+                where: {
+                    senderAccountId: sender.id,
+                    status: 'COMPLETED',
+                    createdAt: { gte: new Date(now.getTime() - 24 * 60 * 60 * 1000) }
+                }
+            });
+            if (successfulOutgoingCount >= 20) {
+                await tx.account.update({
+                    where: { id: sender.id },
+                    data: { outgoingRestrictionUntil: new Date(now.getTime() + 24 * 60 * 60 * 1000) }
+                });
+                return rejectTransfer(
+                    'The 24-hour outgoing transfer limit has been reached. Try again after the restriction expires.',
+                    'OUTGOING_TRANSFER_RESTRICTED'
+                );
+            }
+            const shouldSendFrequencyAlert = successfulOutgoingCount === 9;
+
             const transfer = await tx.transfer.create({
                 data: {
                     senderAccountId: sender.id,
@@ -287,11 +340,17 @@ async function transactionController(req, res) {
             });
 
             if (risk.level === 'HIGH') {
+                const reviewDeadlineAt = new Date(Date.now() + REVIEW_DURATION_HOURS * 60 * 60 * 1000);
                 const heldTransfer = await tx.transfer.update({
                     where: { id: transfer.id },
-                    data: { status: 'REVIEW' },
-                    include: { riskAssessment: true }
+                    data: { status: 'REVIEW', reviewDeadlineAt },
+                    include: {
+                        riskAssessment: true,
+                        senderAccount: { include: { user: true } },
+                        receiverAccount: true
+                    }
                 });
+                await queueTransferReviewNotification(tx, heldTransfer, reviewDeadlineAt);
                 const response = transferResponse(heldTransfer);
                 await tx.idempotencyKey.create({
                     data: {
@@ -323,7 +382,9 @@ async function transactionController(req, res) {
                 }
             });
             await queueTransferNotifications(tx, completedTransfer);
-
+            const frequencyNotificationId = shouldSendFrequencyAlert
+                ? await queueFrequencyAlertIfNeeded(tx, completedTransfer, now)
+                : null;
             const response = transferResponse(completedTransfer);
             await tx.idempotencyKey.create({
                 data: {
@@ -337,7 +398,7 @@ async function transactionController(req, res) {
                 }
             });
 
-            return { transfer: completedTransfer, replayed: false, statusCode: 201 };
+            return { transfer: completedTransfer, replayed: false, statusCode: 201, frequencyNotificationId };
         }, {
             isolationLevel: Prisma.TransactionIsolationLevel.Serializable
         });
@@ -355,8 +416,9 @@ async function transactionController(req, res) {
             transfer: transferResponse(result.transfer),
             replayed: result.replayed
         });
-        if (result.transfer.status === 'COMPLETED') {
+        if (result.transfer.status === 'COMPLETED' || result.transfer.status === 'REVIEW') {
             void dispatchTransactionNotifications(result.transfer.id);
+            if (result.frequencyNotificationId) void dispatchSecurityNotification(result.frequencyNotificationId);
         }
     } catch (error) {
         if (error.code === 'P2002') {

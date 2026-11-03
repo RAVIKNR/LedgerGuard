@@ -13,14 +13,18 @@ function createConnection() {
 let connection;
 let reconciliationQueue;
 let riskQueue;
+let reviewQueue;
+let notificationQueue;
 
 function getQueues() {
     if (!connection) {
         connection = createConnection();
         reconciliationQueue = new Queue('ledgerguard-reconciliation', { connection });
         riskQueue = new Queue('ledgerguard-risk', { connection });
+        reviewQueue = new Queue('ledgerguard-review', { connection });
+        notificationQueue = new Queue('ledgerguard-notifications', { connection });
     }
-    return { reconciliationQueue, riskQueue };
+    return { reconciliationQueue, riskQueue, reviewQueue, notificationQueue };
 }
 
 module.exports = { getQueues };

@@ -9,6 +9,10 @@ jest.mock('../src/config/db', () => ({
         account: { findMany: jest.fn(), create: jest.fn() }
     }
 }));
+jest.mock('../src/services/email.services', () => ({
+    ...jest.requireActual('../src/services/email.services'),
+    sendAccountCreatedEmail: jest.fn().mockResolvedValue(undefined)
+}));
 
 const request = require('supertest');
 const { prisma } = require('../src/config/db');
