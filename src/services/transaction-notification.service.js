@@ -164,7 +164,8 @@ async function dispatchTransactionNotifications(transferId) {
                         reference: notification.reference,
                         risk: notification.transfer.riskAssessment,
                         recipientAccount: notification.transfer.receiverAccount,
-                        reviewDeadlineAt: notification.reviewDeadlineAt
+                        reviewDeadlineAt: notification.reviewDeadlineAt,
+                        occurredAt: notification.occurredAt
                     });
                 } else if (notification.notificationType === 'APPROVED' || notification.notificationType === 'REJECTED') {
                     await sendTransferDecisionEmail({

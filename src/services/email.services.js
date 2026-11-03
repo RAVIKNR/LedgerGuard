@@ -2,7 +2,7 @@ const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '../../.env') });
 const nodemailer = require('nodemailer');
 const crypto = require("crypto");
-const { renderLedgerGuardEmail, renderTransactionEmail, renderFailedTransactionEmail, renderSecurityNotificationEmail, renderAccountEventEmail } = require('./ledgerguard-email.template');
+const { renderLedgerGuardEmail, renderTransactionEmail, renderFailedTransactionEmail, renderSecurityNotificationEmail, renderHighAmountSecurityEmail, renderFrequencySecurityEmail, renderAccountEventEmail } = require('./ledgerguard-email.template');
 const { getFrontendUrl } = require('../config/frontend-url');
 
 const smtpHost = process.env.EMAIL_HOST || 'smtp.gmail.com';
@@ -205,6 +205,15 @@ async function sendFailedTransactionEmail({ email, name, amountMinor, currency, 
 }
 
 async function sendSecurityNotificationEmail(notification) {
+  if (notification.eventType === 'FREQUENCY_ALERT') {
+    const message = renderFrequencySecurityEmail({
+      recipientName: notification.recipientName,
+      accountIdentifier: notification.accountId ? `acct-****-${notification.accountId.slice(-4)}` : null,
+      occurredAt: notification.occurredAt
+    });
+    await sendEmail(notification.recipientEmail, 'Unusually high transaction activity | LedgerGuard', message.text, message.html, { event: 'frequency_alert' });
+    return;
+  }
   const message = renderSecurityNotificationEmail({
     recipientName: notification.recipientName,
     eventType: notification.eventType,
@@ -217,7 +226,7 @@ async function sendSecurityNotificationEmail(notification) {
   await sendEmail(notification.recipientEmail, `${message.subject} | LedgerGuard`, message.text, message.html);
 }
 
-async function sendTransferReviewEmail({ email, name, amountMinor, currency, reference, risk, recipientAccount, reviewDeadlineAt }) {
+async function sendTransferReviewEmail({ email, name, amountMinor, currency, reference, risk, recipientAccount, reviewDeadlineAt, occurredAt }) {
   const amount = new Intl.NumberFormat('en-IN', {
     style: 'currency',
     currency: currency.trim()
@@ -225,30 +234,18 @@ async function sendTransferReviewEmail({ email, name, amountMinor, currency, ref
   const reasons = Array.isArray(risk?.reasons) ? risk.reasons.join('; ') : 'Configured risk signals were detected';
   const expiry = new Date(reviewDeadlineAt).toISOString();
   const supportContact = process.env.SUPPORT_EMAIL || process.env.MAILJET_FROM_EMAIL;
-  const message = renderLedgerGuardEmail({
+  const message = renderHighAmountSecurityEmail({
     recipientName: name,
-    title: 'Transfer held for security review',
-    intro: `Your ${amount} ${currency.trim()} transfer is currently under REVIEW.`,
-    message: [
-      `Recipient account: acct-****-${String(recipientAccount?.accountNumber || '').slice(-4)}`,
-      `Transfer reference: ${reference || 'Unavailable'}`,
-      `Risk score: ${risk?.score ?? 'Unavailable'} (${risk?.level || 'HIGH'})`,
-      `Risk reasons: ${reasons}`,
-      `Review expiry: ${expiry} UTC`,
-      `Verified LedgerGuard support contact: ${supportContact || 'Use the support contact configured for your account'}`,
-      'This transaction has been temporarily placed on hold because the amount is unusually high compared with your recent transaction history.',
-      'Contact the administration team to request approval. If you did not initiate this transaction, contact the administration team to request rejection.',
-      'The transaction will be automatically approved after 24 hours, consistent with LedgerGuard business rules.'
-      ,'LedgerGuard will never ask you to share an OTP, PIN, password, or verification code.'
-    ].join('\n'),
-    expiry: expiry
+    amount,
+    currency: currency.trim(),
+    recipientAccount: `acct-****-${String(recipientAccount?.accountNumber || '').slice(-4)}`,
+    occurredAt: occurredAt || new Date(),
+    reference,
+    reasons: `${reasons} (risk score ${risk?.score ?? 'Unavailable'}, ${risk?.level || 'HIGH'})`,
+    reviewDeadlineAt,
+    supportContact
   });
-  const crimsonHtml = message.html
-    .replace(/#63dbaa/gi, '#ef9a8f')
-    .replace(/#55d6a0/gi, '#ef6f67')
-    .replace(/#294335/gi, '#70443d')
-    .replace(/#365a46/gi, '#70443d');
-  await sendEmail(email, 'Security review required | LedgerGuard', message.text, crimsonHtml, { event: 'transfer_review' });
+  await sendEmail(email, 'Transaction requires your attention | LedgerGuard', message.text, message.html, { event: 'transfer_review' });
 }
 
 async function sendTransferDecisionEmail({ email, name, amountMinor, currency, reference, decision, occurredAt }) {
