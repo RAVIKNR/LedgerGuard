@@ -166,7 +166,10 @@ function renderSecurityNotificationEmail({
     occurredAt
 }) {
     const restored = eventType === 'ACCOUNT_UNFROZEN' || eventType === 'USER_REACTIVATED';
-    const subject = eventType === 'ACCOUNT_FROZEN'
+    const frequencyAlert = eventType === 'FREQUENCY_ALERT';
+    const subject = frequencyAlert
+        ? 'Unusually frequent transaction activity detected'
+        : eventType === 'ACCOUNT_FROZEN'
         ? 'Your account has been frozen'
         : eventType === 'USER_SUSPENDED'
             ? 'Your LedgerGuard access has been suspended'
@@ -178,7 +181,9 @@ function renderSecurityNotificationEmail({
     const safeReason = reason ? escapeHtml(reason) : '';
     const date = new Date(occurredAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
     const safeDate = escapeHtml(date);
-    const impact = eventType === 'ACCOUNT_FROZEN'
+    const impact = frequencyAlert
+        ? 'Ten successful outgoing transactions were detected within the last 24 hours. Please confirm that you recognize and authorized this activity. If you do not recognize it, contact the administration team immediately.'
+        : eventType === 'ACCOUNT_FROZEN'
         ? 'Some operations on this account may be restricted while it is frozen.'
         : eventType === 'USER_SUSPENDED'
             ? 'Sign-in and account operations are restricted while your access is suspended.'
@@ -199,7 +204,7 @@ function renderSecurityNotificationEmail({
     ].filter(Boolean).join('\n');
     const reasonHtml = safeReason ? `<p><strong>Reason:</strong> ${safeReason}</p>` : '';
     const accountHtml = accountIdentifier ? `<p><strong>Account:</strong> ${safeAccount}</p>` : '';
-    const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(subject)}</title></head><body style="margin:0;background:#08100b;color:#d8e5dc;font-family:Arial,Helvetica,sans-serif"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="padding:32px 14px;background:#08100b"><tr><td align="center"><table role="presentation" width="600" cellspacing="0" cellpadding="0" style="width:100%;max-width:600px;background:#101914;border:1px solid #294335;border-radius:14px"><tr><td style="padding:25px 32px;border-bottom:1px solid #294335;color:#f1f7f2;font-size:19px;font-weight:bold">ledger<span style="color:#55d6a0">guard</span></td></tr><tr><td style="padding:30px 32px"><p style="color:#63dbaa;font-size:11px;font-weight:bold;letter-spacing:1.5px;text-transform:uppercase">Account security</p><h1 style="color:#edf6ef;font-size:25px">${escapeHtml(subject)}</h1><p style="color:#d8e5dc;font-size:15px;line-height:1.6">Hi ${safeName},</p>${accountHtml}<p><strong>Status:</strong> ${safePrevious} &rarr; ${safeResulting}<br><strong>Effective:</strong> ${safeDate}</p>${reasonHtml}<p style="line-height:1.6">${escapeHtml(impact)}</p></td></tr><tr><td style="padding:17px 32px;border-top:1px solid #294335;color:#75877c;font-size:11px">LedgerGuard · Automated security notification</td></tr></table></td></tr></table></body></html>`;
+    const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(subject)}</title></head><body style="margin:0;background:#08100b;color:#d8e5dc;font-family:Arial,Helvetica,sans-serif"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="padding:32px 14px;background:#08100b"><tr><td align="center"><table role="presentation" width="600" cellspacing="0" cellpadding="0" style="width:100%;max-width:600px;background:#101914;border:1px solid ${frequencyAlert ? '#70443d' : '#294335'};border-radius:14px"><tr><td style="padding:25px 32px;border-bottom:1px solid ${frequencyAlert ? '#70443d' : '#294335'};color:#f1f7f2;font-size:19px;font-weight:bold">ledger<span style="color:#55d6a0">guard</span></td></tr><tr><td style="padding:30px 32px"><p style="color:${frequencyAlert ? '#ef9a8f' : '#63dbaa'};font-size:11px;font-weight:bold;letter-spacing:1.5px;text-transform:uppercase">Account security</p><h1 style="color:#edf6ef;font-size:25px">${escapeHtml(subject)}</h1><p style="color:#d8e5dc;font-size:15px;line-height:1.6">Hi ${safeName},</p>${accountHtml}<p><strong>Status:</strong> ${safePrevious} &rarr; ${safeResulting}<br><strong>Effective:</strong> ${safeDate}</p>${reasonHtml}<p style="line-height:1.6">${escapeHtml(impact)}</p></td></tr><tr><td style="padding:17px 32px;border-top:1px solid #294335;color:#75877c;font-size:11px">LedgerGuard · Automated security notification</td></tr></table></td></tr></table></body></html>`;
     return { html, text, subject, restored };
 }
 

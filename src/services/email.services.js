@@ -236,12 +236,19 @@ async function sendTransferReviewEmail({ email, name, amountMinor, currency, ref
       `Risk reasons: ${reasons}`,
       `Review expiry: ${expiry} UTC`,
       `Verified LedgerGuard support contact: ${supportContact || 'Use the support contact configured for your account'}`,
-      'You have a 24-hour objection window from the time this review began. If no objection is recorded before the deadline, the configured automatic-resolution policy may approve the transfer only when explicitly enabled by an authorized operator.'
+      'This transaction has been temporarily placed on hold because the amount is unusually high compared with your recent transaction history.',
+      'Contact the administration team to request approval. If you did not initiate this transaction, contact the administration team to request rejection.',
+      'The transaction will be automatically approved after 24 hours, consistent with LedgerGuard business rules.'
       ,'LedgerGuard will never ask you to share an OTP, PIN, password, or verification code.'
     ].join('\n'),
     expiry: expiry
   });
-  await sendEmail(email, 'Security review required | LedgerGuard', message.text, message.html, { event: 'transfer_review' });
+  const crimsonHtml = message.html
+    .replace(/#63dbaa/gi, '#ef9a8f')
+    .replace(/#55d6a0/gi, '#ef6f67')
+    .replace(/#294335/gi, '#70443d')
+    .replace(/#365a46/gi, '#70443d');
+  await sendEmail(email, 'Security review required | LedgerGuard', message.text, crimsonHtml, { event: 'transfer_review' });
 }
 
 async function sendTransferDecisionEmail({ email, name, amountMinor, currency, reference, decision, occurredAt }) {

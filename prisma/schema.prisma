@@ -225,6 +225,7 @@ model Account {
   userId            String           @map("user_id") @db.Uuid
   currency          String           @db.Char(3)
   status            AccountStatus    @default(ACTIVE)
+  outgoingRestrictionUntil DateTime? @map("outgoing_restriction_until")
   createdAt         DateTime         @default(now()) @map("created_at")
   updatedAt         DateTime         @updatedAt @map("updated_at")
   user              User             @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Cascade)
@@ -236,6 +237,7 @@ model Account {
 
   @@unique([userId, currency])
   @@index([userId])
+  @@index([outgoingRestrictionUntil])
   @@map("accounts")
 }
 

@@ -5,8 +5,10 @@ const { queueSecurityNotification, dispatchSecurityNotification } = require('../
 const {
     queueTransferFailureNotification,
     queueTransferDecisionNotification,
-    dispatchTransactionNotifications
+    dispatchTransactionNotifications,
+    queueTransferNotifications
 } = require('../services/transaction-notification.service');
+const { queueFrequencyAlertIfNeeded } = require('../services/transaction-frequency.service');
 const { settleReviewedTransfer } = require('../services/transfer-settlement.service');
 
 const USER_SELECT = {
@@ -135,6 +137,7 @@ async function decideTransfer(req, res) {
         let decidedTransfer = transfer;
         if (decision === 'APPROVE') {
             decidedTransfer = await settleReviewedTransfer(tx, transfer.id);
+            await queueTransferNotifications(tx, decidedTransfer);
         } else {
             await tx.$queryRaw`SELECT id FROM "transfers" WHERE id = ${transfer.id}::uuid FOR UPDATE`;
             const current = await tx.transfer.findUnique({ where: { id: transfer.id }, select: { status: true } });
@@ -181,11 +184,15 @@ async function decideTransfer(req, res) {
             }
         });
         await queueTransferDecisionNotification(tx, decidedTransfer, decision === 'APPROVE' ? 'APPROVED' : 'REJECTED');
-        return { transferId: transfer.id, decision: recorded.decision, decidedAt: recorded.createdAt };
+        const frequencyNotificationId = decision === 'APPROVE'
+            ? await queueFrequencyAlertIfNeeded(tx, decidedTransfer)
+            : null;
+        return { transferId: transfer.id, decision: recorded.decision, decidedAt: recorded.createdAt, frequencyNotificationId };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 
     res.status(200).json({ decision: result });
     void dispatchTransactionNotifications(result.transferId);
+    if (result.frequencyNotificationId) void dispatchSecurityNotification(result.frequencyNotificationId);
 }
 
 async function listUsers(req, res) {

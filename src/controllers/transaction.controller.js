@@ -8,6 +8,8 @@ const {
     queueTransferFailureNotification,
     queueTransferReviewNotification
 } = require('../services/transaction-notification.service');
+const { dispatchSecurityNotification } = require('../services/security-notification.service');
+const { queueFrequencyAlertIfNeeded } = require('../services/transaction-frequency.service');
 const { getReviewDurationHours } = require('../config/review-policy');
 
 const REVIEW_DURATION_HOURS = getReviewDurationHours();
@@ -222,6 +224,20 @@ async function transactionController(req, res) {
                         }
                     }
                 };
+
+                const now = new Date();
+                if (sender.outgoingRestrictionUntil && sender.outgoingRestrictionUntil > now) {
+                    return rejectTransfer(
+                        `Outgoing transfers are temporarily restricted until ${sender.outgoingRestrictionUntil.toISOString()}`,
+                        'OUTGOING_TRANSFER_RESTRICTED'
+                    );
+                }
+                if (sender.outgoingRestrictionUntil) {
+                    await tx.account.update({
+                        where: { id: sender.id },
+                        data: { outgoingRestrictionUntil: null }
+                    });
+                }
             };
 
             const senderUser = await tx.user.findUnique({
@@ -267,6 +283,25 @@ async function transactionController(req, res) {
             if (balanceMinor < amountMinor) {
                 return rejectTransfer('Insufficient Funds', 'INSUFFICIENT_FUNDS', balanceMinor);
             }
+
+            const successfulOutgoingCount = await tx.transfer.count({
+                where: {
+                    senderAccountId: sender.id,
+                    status: 'COMPLETED',
+                    createdAt: { gte: new Date(now.getTime() - 24 * 60 * 60 * 1000) }
+                }
+            });
+            if (successfulOutgoingCount >= 20) {
+                await tx.account.update({
+                    where: { id: sender.id },
+                    data: { outgoingRestrictionUntil: new Date(now.getTime() + 24 * 60 * 60 * 1000) }
+                });
+                return rejectTransfer(
+                    'The 24-hour outgoing transfer limit has been reached. Try again after the restriction expires.',
+                    'OUTGOING_TRANSFER_RESTRICTED'
+                );
+            }
+            const shouldSendFrequencyAlert = successfulOutgoingCount === 9;
 
             const transfer = await tx.transfer.create({
                 data: {
@@ -337,7 +372,9 @@ async function transactionController(req, res) {
                 }
             });
             await queueTransferNotifications(tx, completedTransfer);
-
+            const frequencyNotificationId = shouldSendFrequencyAlert
+                ? await queueFrequencyAlertIfNeeded(tx, completedTransfer, now)
+                : null;
             const response = transferResponse(completedTransfer);
             await tx.idempotencyKey.create({
                 data: {
@@ -351,7 +388,7 @@ async function transactionController(req, res) {
                 }
             });
 
-            return { transfer: completedTransfer, replayed: false, statusCode: 201 };
+            return { transfer: completedTransfer, replayed: false, statusCode: 201, frequencyNotificationId };
         }, {
             isolationLevel: Prisma.TransactionIsolationLevel.Serializable
         });
@@ -371,6 +408,7 @@ async function transactionController(req, res) {
         });
         if (result.transfer.status === 'COMPLETED' || result.transfer.status === 'REVIEW') {
             void dispatchTransactionNotifications(result.transfer.id);
+            if (result.frequencyNotificationId) void dispatchSecurityNotification(result.frequencyNotificationId);
         }
     } catch (error) {
         if (error.code === 'P2002') {
